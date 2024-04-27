@@ -1,0 +1,66 @@
+
+> stargazer(
++   list(m1[2], m2[2],
++        m3[2], m4[2]),
++   title="Resultado Modelo Regressão Empreendimentos ERM", type="html", 
++   df=FALSE, di .... [TRUNCATED] 
+
+<table style="text-align:center"><caption><strong>Resultado Modelo Regressão Empreendimentos ERM</strong></caption>
+<tr><td colspan="5" style="border-bottom: 1px solid black"></td></tr><tr><td style="text-align:left"></td><td colspan="4">Alvarás entre 2013 e 2021</td></tr>
+<tr><td></td><td colspan="4" style="border-bottom: 1px solid black"></td></tr>
+<tr><td style="text-align:left"></td><td colspan="4">log(n_empreendimentos_erm_por_km2)</td></tr>
+<tr><td style="text-align:left"></td><td>(1)</td><td>(2)</td><td>(3)</td><td>(4)</td></tr>
+<tr><td colspan="5" style="border-bottom: 1px solid black"></td></tr><tr><td style="text-align:left">Zona EETU</td><td>-0.5240</td><td>-0.5238<sup>*</sup></td><td>-1.0451<sup>***</sup></td><td>-0.7736<sup>**</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.4111)</td><td>(0.3085)</td><td>(0.3055)</td><td>(0.3189)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Zona EETU Futuros</td><td>0.6620</td><td>0.0509</td><td>-0.4540</td><td>-0.1518</td></tr>
+<tr><td style="text-align:left"></td><td>(0.4373)</td><td>(0.3314)</td><td>(0.3357)</td><td>(0.3473)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Zona ZC e ZMs</td><td>-0.4563</td><td>-0.3603</td><td>-1.1393<sup>***</sup></td><td>-0.8542<sup>*</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.5482)</td><td>(0.4125)</td><td>(0.4171)</td><td>(0.4374)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Zona ZEIS Aglomerado</td><td>-0.6440</td><td>0.2792</td><td>-0.5349</td><td>-0.5780</td></tr>
+<tr><td style="text-align:left"></td><td>(0.7789)</td><td>(0.5917)</td><td>(0.5840)</td><td>(0.6175)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Zona ZEIS Vazio</td><td>-1.4064<sup>**</sup></td><td>-1.0367<sup>**</sup></td><td>-1.9381<sup>***</sup></td><td>-1.5489<sup>***</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.5888)</td><td>(0.4627)</td><td>(0.4338)</td><td>(0.4608)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Área de Solo Disponível</td><td>-0.8044</td><td>1.4060<sup>***</sup></td><td>0.3457</td><td>0.1598</td></tr>
+<tr><td style="text-align:left"></td><td>(0.6038)</td><td>(0.5219)</td><td>(0.5143)</td><td>(0.5314)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Fragmentação do Solo Disponível</td><td>-0.7688<sup>***</sup></td><td>-0.8843<sup>***</sup></td><td>-0.5366<sup>**</sup></td><td>-0.5932<sup>***</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(0.2537)</td><td>(0.1988)</td><td>(0.2054)</td><td>(0.2185)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log(empregos/km2)</td><td></td><td></td><td>0.6688<sup>***</sup></td><td></td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td>(0.0922)</td><td></td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log(acesso a empregos)</td><td></td><td></td><td></td><td>0.7277<sup>***</sup></td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td>(0.1269)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log(equipamentos/km2)</td><td></td><td></td><td>0.1765</td><td>0.2614</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td>(0.1768)</td><td>(0.1846)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Distância ao CBD</td><td></td><td>-0.0001</td><td>0.0050</td><td>0.0036</td></tr>
+<tr><td style="text-align:left"></td><td></td><td>(0.0184)</td><td>(0.0182)</td><td>(0.0205)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Densidade populacional</td><td></td><td>0.00001<sup>***</sup></td><td>0.000001</td><td>0.000005</td></tr>
+<tr><td style="text-align:left"></td><td></td><td>(0.000004)</td><td>(0.000004)</td><td>(0.000004)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">log(renda per capita)</td><td></td><td>0.9180<sup>***</sup></td><td></td><td></td></tr>
+<tr><td style="text-align:left"></td><td></td><td>(0.1385)</td><td></td><td></td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Cobertura esgoto</td><td></td><td>-0.1744</td><td>-1.1413</td><td>-0.3285</td></tr>
+<tr><td style="text-align:left"></td><td></td><td>(1.3873)</td><td>(1.4078)</td><td>(1.4434)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td style="text-align:left">Constant</td><td>4.7926<sup>***</sup></td><td>-1.9839</td><td>-1.8528</td><td>-4.6141<sup>**</sup></td></tr>
+<tr><td style="text-align:left"></td><td>(1.7132)</td><td>(1.9698)</td><td>(1.9915)</td><td>(2.1422)</td></tr>
+<tr><td style="text-align:left"></td><td></td><td></td><td></td><td></td></tr>
+<tr><td colspan="5" style="border-bottom: 1px solid black"></td></tr><tr><td style="text-align:left">Observations</td><td>147</td><td>147</td><td>146</td><td>147</td></tr>
+<tr><td style="text-align:left">R<sup>2</sup></td><td>0.3249</td><td>0.6360</td><td>0.6534</td><td>0.6235</td></tr>
+<tr><td style="text-align:left">Adjusted R<sup>2</sup></td><td>0.2910</td><td>0.6063</td><td>0.6221</td><td>0.5898</td></tr>
+<tr><td style="text-align:left">Residual Std. Error</td><td>0.9291</td><td>0.6923</td><td>0.6685</td><td>0.7067</td></tr>
+<tr><td style="text-align:left">F Statistic</td><td>9.5586<sup>***</sup></td><td>21.4393<sup>***</sup></td><td>20.8907<sup>***</sup></td><td>18.4928<sup>***</sup></td></tr>
+<tr><td colspan="5" style="border-bottom: 1px solid black"></td></tr><tr><td style="text-align:left"><em>Note:</em></td><td colspan="4" style="text-align:right"><sup>*</sup>p<0.1; <sup>**</sup>p<0.05; <sup>***</sup>p<0.01</td></tr>
+</table>
+
+> sink()
