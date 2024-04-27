@@ -8,10 +8,9 @@
 
 # User-specific files
 .Ruserdata
-inputs/
-#inputs/1_inbound/
-#inputs/2_trusted/Lancamentos/
-#inputs/3_portal_dados/
+inputs/1_inbound/
+inputs/2_trusted/
+inputs/3_portal_dados/
 old/
 
 # Example code in package build process
