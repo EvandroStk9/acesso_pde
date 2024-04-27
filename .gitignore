@@ -11,6 +11,7 @@
 inputs/1_inbound/
 inputs/2_trusted/
 inputs/3_portal_dados/
+inputs/metadados/0_raw/
 old/
 
 # Example code in package build process
