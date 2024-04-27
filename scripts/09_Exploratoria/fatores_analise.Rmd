@@ -1,0 +1,345 @@
+---
+title: "Nota técnica - mudanças recentes na produção habitacional formal em São Paulo"
+author: "Por Adriano Borges Costa e Evandro Luis"
+date: "Em `r format(Sys.time(), '%d de %B de %Y')`"
+---
+
+```{css, echo=FALSE}
+
+.list-group-item.active, .list-group-item.active:hover, .list-group-item.active:focus {
+background-color: #bcbec0;
+border-color: #bcbec0;
+}
+
+.nav>li>a {
+color: #f69679;
+}
+
+body {
+text-align: justify;
+}
+
+#TOC {
+text-align: left;
+background: url("https://www.insper.edu.br/wp-content/uploads/2019/11/logo-insper-arqfuturo-2.png");
+background-size: contain;
+padding-top: 80px !important;
+background-repeat: no-repeat;
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, tidy = TRUE, 
+                      fig.dim=c(16,12), out.width = "100%",  fig.retina = 2)
+
+```
+
+```{r}
+#
+options(scipen = 9999)
+
+# Definindo novo default de cores adequado à paleta de cores do Insper
+options(ggplot2.discrete.colour = c("#009491", "#c4161c"),
+        ggplot2.discrete.fill = c("#009491", "#c4161c"))
+
+```
+
+```{r library}
+library(here)
+library(sf)
+library(sfarrow)
+library(arrow)
+library(tidyverse)
+library(lubridate)
+library(skimr)
+library(stringr)
+library(tidyverse)
+library(readxl)
+library(ggtext)
+library(patchwork)
+library(ggrepel)
+library(ggthemes)
+library(scales)
+library(gt)
+
+```
+
+```{r, include=FALSE}
+
+#
+CRS <- "+proj=utm +zone=23 +south +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+
+#
+alvaras_por_lote <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Licenciamentos",
+       "alvaras_por_lote.parquet")) %>%
+  filter(ano_execucao >=2013) %>%
+  mutate(
+    periodo = case_when(
+      between(ano_execucao, 2013, 2015) ~ "2013-2015",
+      between(ano_execucao, 2016, 2018) & legislacao == "Pré-PDE2014" ~ "2016-2018 (Pré-PDE)",
+      between(ano_execucao, 2016, 2018) & legislacao == "PDE2014eLPUOS2016" ~ "2016-2018 (Pós-PDE)",
+      between(ano_execucao, 2019, 2021) ~ "2019-2021",
+      # legislacao == "PDE2014eLPUOS2004" ~ "PDE2014eLPUOS2004",
+      TRUE ~ NA_character_) %>%
+      factor(levels = c("2013-2015", "2016-2018 (Pré-PDE)", 
+                        "2016-2018 (Pós-PDE)", "2019-2021")),
+    porte = case_when(
+      n_unidades < 50 ~ "Pequeno porte",
+      between(n_unidades, 50, 199) ~ "Médio porte",
+      n_unidades >= 200 ~ "Grande porte",
+      TRUE ~ NA_character_))
+
+# Criados pelo script fatores_model_lm.R
+cor_alvaras_y_pre_pde <- read_csv(here("outputs", "Exploratoria", "Fatores",
+                                       "cor_alvaras_vs_fatores_pre_pde.csv"))
+cor_alvaras_y_pos_pde <- read_csv(here("outputs", "Exploratoria", "Fatores",
+                                       "cor_alvaras_vs_fatores_pos_pde.csv"))
+
+```
+
+
+# Fatores urbanos associados à produção imobiliária
+
+## Correlação entre densidade de unidades residenciais licenciadas e variáveis de fatores urbanos (empreendimentos entre 2013 e 2021 que seguem regramento anterior)
+
+```{r}
+
+#
+table_cor_alvaras_y_pre_pde <- 
+  cor_alvaras_y_pre_pde %>%
+  mutate(var = fct_recode(var,
+                          "Densidade populacional (pop/km²)" = "densidade_pop", 
+                          "Distância ao CBD (km)" = "distancia",
+                          "Renda per capita (R$)" = "renda_per_capita", 
+                          "Domicílios com esgoto (%)" = "perc_com_esgoto"))%>%
+  gt() %>%
+  cols_label(var = "",
+             n_empreendimentos_erm_por_km2 = "ERM - Emprendimentos por km²",
+             n_empreendimentos_erp_por_km2 = "ERP - Emprendimentos por km²",
+             n_unidades_erm_por_km2 = "ERM - UH's por km²",
+             n_unidades_erp_por_km2 = "ERP - UH's por km²") %>%
+  fmt_number(columns = 2:5,
+             decimals = 3,
+             sep_mark = ".",
+             dec_mark = ",") %>%
+  tab_source_note(source_note = md("
+  **Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo")) %>%
+  tab_options(
+    column_labels.font.weight = "bolder",
+    heading.align = "left",
+    table.align = "left",
+    row_group.font.weight = "bold",
+    # row_group.background.color = "grey",
+    source_notes.font.size = 14,
+    table.width = pct(100)) %>%
+  cols_align("center") %>%
+  cols_align("left", columns = "var") %>%
+  tab_style(
+    style = cell_text(color = "red"),
+    locations = list(
+      cells_body(
+        columns = 2,
+        rows = n_empreendimentos_erm_por_km2 > 0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "darkblue"),
+    locations = list(
+      cells_body(
+        columns = 2,
+        rows = n_empreendimentos_erm_por_km2 < -0.3
+      )
+    )
+  ) %>%
+  cols_align("left", columns = "var") %>%
+  tab_style(
+    style = cell_text(color = "red"),
+    locations = list(
+      cells_body(
+        columns = 3,
+        rows = n_empreendimentos_erp_por_km2 > 0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "darkblue"),
+    locations = list(
+      cells_body(
+        columns = 3,
+        rows = n_empreendimentos_erp_por_km2 < -0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "red"),
+    locations = list(
+      cells_body(
+        columns = 4,
+        rows = n_unidades_erm_por_km2 > 0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "darkblue"),
+    locations = list(
+      cells_body(
+        columns = 4,
+        rows = n_unidades_erm_por_km2 < -0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "red"),
+    locations = list(
+      cells_body(
+        columns = 5,
+        rows = n_unidades_erp_por_km2 > 0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "darkblue"),
+    locations = list(
+      cells_body(
+        columns = 5,
+        rows = n_unidades_erp_por_km2 < -0.3
+      )
+    )
+  )
+
+#
+table_cor_alvaras_y_pre_pde
+
+# #
+# fs::dir_create(here("outputs", "Alvaras", "alvaras_analise_files"))
+# 
+# #
+# gtsave(table_cor_alvaras_y_pre_pde, "table_cor_alvaras_y_pre_pde.png",
+#        here("outputs", "Alvaras", "alvaras_analise_files"))
+
+
+
+```
+
+## Correlação entre densidade de unidades residenciais licenciadas e variáveis de fatores urbanos (empreendimentos entre 2013 e 2021 que seguem regramento atual)
+
+```{r}
+
+table_cor_alvaras_y_pos_pde <-
+  cor_alvaras_y_pos_pde %>%
+  mutate(var = fct_recode(var,
+                          "Densidade populacional (pop/km²)" = "densidade_pop", 
+                          "Distância ao CBD (km)" = "distancia",
+                          "Renda per capita (R$)" = "renda_per_capita", 
+                          "Domicílios com esgoto (%)" = "perc_com_esgoto"))%>%
+  gt() %>%
+  cols_label(var = "",
+             n_empreendimentos_erm_por_km2 = "ERM - Emprendimentos por km²",
+             n_empreendimentos_erp_por_km2 = "ERP - Emprendimentos por km²",
+             n_unidades_erm_por_km2 = "ERM - UH's por km²",
+             n_unidades_erp_por_km2 = "ERP - UH's por km²") %>%
+  fmt_number(columns = 2:5,
+             decimals = 3,
+             sep_mark = ".",
+             dec_mark = ",") %>%
+  tab_source_note(source_note = md("
+  **Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo")) %>%
+  tab_options(
+    column_labels.font.weight = "bolder",
+    heading.align = "left",
+    table.align = "left",
+    row_group.font.weight = "bold",
+    # row_group.background.color = "grey",
+    source_notes.font.size = 14,
+    table.width = pct(100)) %>%
+  cols_align("center") %>%
+  cols_align("left", columns = "var") %>%
+  tab_style(
+    style = cell_text(color = "red"),
+    locations = list(
+      cells_body(
+        columns = 2,
+        rows = n_empreendimentos_erm_por_km2 > 0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "darkblue"),
+    locations = list(
+      cells_body(
+        columns = 2,
+        rows = n_empreendimentos_erm_por_km2 < -0.3
+      )
+    )
+  ) %>%
+  cols_align("left", columns = "var") %>%
+  tab_style(
+    style = cell_text(color = "red"),
+    locations = list(
+      cells_body(
+        columns = 3,
+        rows = n_empreendimentos_erp_por_km2 > 0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "darkblue"),
+    locations = list(
+      cells_body(
+        columns = 3,
+        rows = n_empreendimentos_erp_por_km2 < -0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "red"),
+    locations = list(
+      cells_body(
+        columns = 4,
+        rows = n_unidades_erm_por_km2 > 0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "darkblue"),
+    locations = list(
+      cells_body(
+        columns = 4,
+        rows = n_unidades_erm_por_km2 < -0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "red"),
+    locations = list(
+      cells_body(
+        columns = 5,
+        rows = n_unidades_erp_por_km2 > 0.3
+      )
+    )
+  ) %>%
+  tab_style(
+    style = cell_text(color = "darkblue"),
+    locations = list(
+      cells_body(
+        columns = 5,
+        rows = n_unidades_erp_por_km2 < -0.3
+      )
+    )
+  )
+
+#
+table_cor_alvaras_y_pos_pde
+
+# #
+# fs::dir_create(here("outputs", "Alvaras", "alvaras_analise_files"))
+# 
+# #
+# gtsave(table_cor_alvaras_y_pos_pde, "table_cor_alvaras_y_pos_pde.png",
+#        here("outputs", "Alvaras", "alvaras_analise_files"))
+
+
+```

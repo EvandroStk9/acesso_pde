@@ -1,0 +1,697 @@
+---
+title: "Estudos de Caso Imobiliário - análise de dois grandes empreendimentos na MEM"
+author: "Por Adriano Borges, Evandro Luis e Joyce Reis"
+date: "Em `r format(Sys.time(), '%d de %B de %Y')`"
+knit: (function(inputFile, encoding) { 
+      out_dir <- '../../outputs/Alvaras';
+      rmarkdown::render(inputFile,
+                        encoding=encoding, 
+                        output_file=file.path(dirname(inputFile), 
+                        out_dir, 'EstudoCasosCriterio.html')) })
+output: 
+  rmarkdown::html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+    theme: united
+---
+
+```{css, echo=FALSE}
+
+.list-group-item.active, .list-group-item.active:hover, .list-group-item.active:focus {
+background-color: #bcbec0;
+border-color: #bcbec0;
+}
+
+.nav>li>a {
+color: #f69679;
+}
+
+body {
+text-align: justify;
+}
+
+#TOC {
+text-align: left;
+background: url("https://www.insper.edu.br/wp-content/uploads/2019/11/logo-insper-arqfuturo-2.png");
+background-size: contain;
+padding-top: 80px !important;
+background-repeat: no-repeat;
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, tidy = TRUE, 
+                      fig.dim=c(16,12), fig.retina = 2)
+```
+
+## Framework
+
+A presente análise exploratória foi elaborada em `linguagem R` com intermédio da IDE `RStudio`. Além do uso dos algoritmos básicos disponibilizados no R, a análise recorreu também ao uso de algoritmos adicionais importados das seguintes livrarias/pacotes de repositórios públicos no CRAN:
+
+```{r}
+library(here)
+library(tidyverse)
+library(sf)
+library(sfarrow)
+# library(accessibility)
+library(leaflet)
+library(gt)
+```
+
+
+```{r}
+
+#
+isocronas_casos <- sfarrow::st_read_parquet(here("inputs", "2_trusted", "Casos",
+                                                 "isocronas_casos.parquet"))
+
+#
+alvaras_por_caso <- sfarrow::st_read_parquet(here("inputs", "2_trusted", "Casos",
+                                                  "casos_alvaras.parquet"))
+
+
+#
+amenidades_casos <- sfarrow::st_read_parquet(here("inputs", "2_trusted", "Casos",
+                                                  "casos_amenidades.parquet"))
+
+#
+empresas_casos <- sfarrow::st_read_parquet(here("inputs", "2_trusted", "Casos",
+                                                "casos_empresas.parquet"))
+
+# Sistema geográfico de referência
+CRS <- "+proj=utm +zone=23 +south +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+
+```
+
+
+```{r cache=FALSE, include=FALSE}
+#
+# sp_rede_viara <- st_read(here("inputs", "Complementares", 
+#                               "RedeRuas", "StreetNtw_SPL.shp")) %>%
+#   st_transform(.x, crs = st_crs(isocronas_casos))
+```
+
+
+```{r include=FALSE}
+#
+caso_1 <- alvaras_por_caso %>%
+  filter(sql_incra == "074.378.0003-9") %>%
+  filter(geom_tipo == "ENTRADA")
+
+#
+isocronas_caso_1 <- isocronas_casos %>%
+  filter(caso == "HIS_FREGUESIA")
+
+#
+amenidades_caso_1 <- amenidades_casos %>%
+  st_transform(crs = CRS) %>%
+  st_filter(isocronas_caso_1 %>% 
+              st_transform(crs = CRS)) %>%
+  st_transform(crs = 4326)
+
+#
+# bbbox_transit_caso_1 <- sf::st_bbox(isocronas_caso_1 %>%
+#                                       filter(mode == "TRANSIT"))
+#
+# bbbox_bike_caso_1 <- sf::st_bbox(isocronas_caso_1 %>%
+#                                    filter(mode == "BICYCLE"))
+
+#
+caso_2 <- alvaras_por_caso %>%
+  filter(sql_incra == "099.054.0005-2") %>%
+  filter(geom_tipo == "ENTRADA")
+
+#
+isocronas_caso_2 <- isocronas_casos %>%
+  filter(caso == "HMP_LAPA")
+
+#
+amenidades_caso_2 <- amenidades_casos %>%
+  st_transform(crs = CRS) %>%
+  st_filter(isocronas_caso_2 %>% 
+              st_transform(crs = CRS)) %>%
+  st_transform(crs = 4326)
+
+# #
+# bbbox_transit_caso_2 <- sf::st_bbox(isocronas_caso_2 %>%
+#                                       filter(mode == "TRANSIT"))
+# #
+# bbbox_bike_caso_2 <- sf::st_bbox(isocronas_caso_2 %>%
+#                                    filter(mode == "BICYCLE"))
+
+```
+
+# Dados
+
+## Casos selecionados da base de alvaras de licenciamento imobiliário
+```{r}
+alvaras_por_caso %>%
+  filter(geom_tipo == "ENTRADA") %>%
+  select(caso, lon, lat, everything()) %>%
+  st_drop_geometry() %>%
+  select(-id, -geom_tipo) %>%
+  mutate(across(everything(), as.character)) %>%
+  pivot_longer(cols = -caso) %>%
+  pivot_wider(names_from = caso, values_from = value) %>%
+  rename("Caso" = name,
+         "Caso 1 - Freguesia/Limão" = HIS_FREGUESIA,
+         "Caso 2 - Lapa" = HMP_LAPA) %>%
+  gt() %>%
+  tab_options(
+    column_labels.font.weight = "bolder",
+    heading.align = "center",
+    table.align = "left",
+    # row_group.font.weight = "bold",
+    # row_group.background.color = "grey",
+    source_notes.font.size = 14,
+    table.width = pct(100))
+
+```
+
+
+## Isócronas de 5 a 30 minutos a pé, de bicicleta e de transporte público
+```{r echo=FALSE, message = FALSE}
+#
+ggplot() +
+  geom_sf(data = isocronas_caso_1, aes(fill = mode, alpha = isochrone), alpha = 0.8, show.legend = FALSE) +
+  # facet_wrap(~caso) +
+  facet_grid(mode~isochrone) +
+  scale_fill_manual(values = c("blue", "firebrick", "black")) +
+  labs(title = "Isócronas caso 1: Condomínio Pátio Limão") +
+  theme_bw() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        title = element_text(size = 20, hjust = 0.5))
+
+#
+ggplot() +
+  geom_sf(data = isocronas_caso_2, aes(fill = mode, alpha = isochrone), alpha = 0.8, show.legend = FALSE) +
+  # facet_wrap(~caso) +
+  facet_grid(mode~isochrone) +
+  scale_fill_manual(values = c("blue", "firebrick", "black")) +
+  labs(title = "Isócronas caso 2: Condomínio Residencial Spirare Lapa") +
+  theme_bw() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        title = element_text(size = 20, hjust = 0.5))
+
+```
+
+
+# Caso 1: Condomínio Pátio Limão
+
+```{r}
+#
+# ggplot() +
+#   geom_sf(data = sp_rede_viara, 
+#           alpha = 0.8, show.legend = FALSE) +
+#   geom_sf(data = isocronas_caso_1 %>%
+#             filter(mode == "WALK"), fill = "black", alpha = 0.5) +
+#   geom_sf(data = isocronas_caso_1 %>%
+#             filter(mode == "BICYCLE"), fill = "blue", alpha = 0.5) +
+#   geom_sf(data = isocronas_caso_1 %>%
+#             filter(mode == "TRANSIT"), fill = "firebrick", alpha = 0.5) +
+#   geom_sf(data = caso_1, color = "red", shape = 4, size = 5) +
+#   scale_size(range = c(0.1, 0.5)) +
+#     facet_wrap(~mode) +
+#   labs(title = "Caso 1 - Condomínio Pátio Limão",
+#        subtitle = "Isócronas de 5 a 30  minutos a pé, de bicicleta e de transporte público") +
+#   coord_sf(xlim = c(bbbox_transit_caso_1$xmin, bbbox_bike_caso_1$xmax), 
+#            ylim = c(bbbox_transit_caso_1$ymin, bbbox_bike_caso_1$ymax)) +
+#   theme_bw()
+
+```
+
+```{r}
+#
+iconSet <- awesomeIconList(
+  restaurant = makeAwesomeIcon(
+    icon = 'cutlery',
+    library = 'glyphicon',
+    iconColor = 'rgb(192, 255, 0)',
+    markerColor = 'darkpurple',
+    spin = TRUE,
+    squareMarker = FALSE
+  )
+)
+```
+
+```{r}
+
+#
+leaflet(width = "100%",
+        height = 900) %>% 
+  # addTiles() %>%
+  addProviderTiles(
+    "OpenStreetMap",
+    # give the layer a name
+    group = "OpenStreetMap"
+  ) %>%
+  # A pé
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "WALK" & isochrone == 5),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "5 minutos andando", 
+              group = "5 minutos andando") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "WALK" & isochrone == 10),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "10 minutos andando", 
+              group = "10 minutos andando") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "WALK" & isochrone == 15),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "15 minutos andando", 
+              group = "15 minutos andando") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "WALK" & isochrone == 20),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "20 minutos andando", 
+              group = "20 minutos andando") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "WALK" & isochrone == 25),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "25 minutos andando", 
+              group = "25 minutos andando") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "WALK" & isochrone == 30),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "30 minutos andando", 
+              group = "30 minutos andando") %>%
+  # Bicicleta
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "BICYCLE" & isochrone == 5),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "5 minutos de bicicleta", 
+              group = "5 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "BICYCLE" & isochrone == 10),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "10 minutos de bicicleta", 
+              group = "10 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "BICYCLE" & isochrone == 15),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "15 minutos de bicicleta", 
+              group = "15 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "BICYCLE" & isochrone == 20),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "20 minutos de bicicleta", 
+              group = "20 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "BICYCLE" & isochrone == 25),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "25 minutos de bicicleta", 
+              group = "25 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "BICYCLE" & isochrone == 30),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "30 minutos de bicicleta", 
+              group = "30 minutos de bicicleta") %>%
+  # Transporte público
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "TRANSIT" & isochrone == 5),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "5 minutos de transporte público", 
+              group = "5 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "TRANSIT" & isochrone == 10),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "10 minutos de transporte público", 
+              group = "10 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "TRANSIT" & isochrone == 15),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "15 minutos de transporte público", 
+              group = "15 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "TRANSIT" & isochrone == 20),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "20 minutos de transporte público", 
+              group = "20 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "TRANSIT" & isochrone == 25),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "25 minutos de transporte público", 
+              group = "25 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_1 %>%
+                filter(mode == "TRANSIT" & isochrone == 30),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "30 minutos de transporte público", 
+              group = "30 minutos de transporte público") %>%
+  # Amenidades
+  # addMarkers(data = amenidades_casos,
+  #            icon = ,
+  #            clusterOptions = markerClusterOptions()) %>%
+  addAwesomeMarkers(
+    data = amenidades_caso_1,
+    icon = ~iconSet,
+    clusterOptions = markerClusterOptions(),
+    popup = paste0(
+      "<b>Amenidade: </b>", amenidades_caso_1$VenueName,"<br>",
+      "<b>Classe: </b>", amenidades_caso_1$ClassName,"<br>",
+      "<b>Categoria: </b>", amenidades_caso_1$CatName,"<br>",
+      "<b>Aberto em: </b>", month.abb[amenidades_caso_1$OpenMonth], "-",
+      amenidades_caso_1$OpenYear,"<br>")
+    ) %>%
+  # Licenciamento
+ addMarkers(
+    data = caso_1,
+    popup = paste0(
+      "<b>Empreendimento: </b> Condomínio Pátio Limão <br>",
+      "<b>Faixa de acesso a oportunidades: </b>", caso_1$fx_acessibilidade_empregos, "<br>",
+      "<b>Unidades: </b>", caso_1$n_unidades, "<br>",
+      "<b>Blocos: </b>", caso_1$n_blocos, "<br>",
+      "<b>Pavimentos: </b>", caso_1$n_pavimentos_por_bloco, "<br>",
+      "<b>Cota-parte: </b>", round(caso_1$cota_parte, 1), "<br>",
+      "<b>CA máximo: </b>", caso_1$ca_maximo, "<br>",
+      "<b>CA total: </b>", round(caso_1$ca_total, 1), "<br>",
+      '<b>Fotos: </b><a href = "https://www.google.com/maps/uv?pb=!1s0x94cef985e8d21d77%3A0xe8f989e6d39c53e1!3m1!7e115!4s%2Fmaps%2Fplace%2Fcondom%25C3%25ADnio%2Bpatio%2Blimao%2F%40-23.507925%2C-46.6855184%2C3a%2C75y%2C1.9h%2C90t%2Fdata%3D*213m4*211e1*213m2*211sHqnu1m2RlGohXxeH3Jln0Q*212e0*214m2*213m1*211s0x94cef985e8d21d77%3A0xe8f989e6d39c53e1%3Fsa%3DX!5scondom%C3%ADnio%20patio%20limao%20-%20Pesquisa%20Google!15sCgIgAQ&imagekey=!1e2!2sHqnu1m2RlGohXxeH3Jln0Q&hl=pt-BR&sa=X&ved=2ahUKEwjT1Lfl5vL9AhW6rZUCHf0mA0EQpx96BAhXEA0"> Google Street View </a><br>'
+    ),
+    # icon = myIcon,
+    label = "Condomínio Pátio Limão",
+    group = "addMarkers"
+  ) %>%
+  addLayersControl(baseGroups = c("Isócronas"), 
+                   overlayGroups = c("5 minutos andando",
+                                     "10 minutos andando", 
+                                     "15 minutos andando", 
+                                     "20 minutos andando", 
+                                     "25 minutos andando", 
+                                     "30 minutos andando", 
+                                     "5 minutos de bicicleta",
+                                     "10 minutos de bicicleta",
+                                     "15 minutos de bicicleta",
+                                     "20 minutos de bicicleta",
+                                     "25 minutos de bicicleta",
+                                     "30 minutos de bicicleta",
+                                     "5 minutos de transporte público",
+                                     "10 minutos de transporte público",
+                                     "15 minutos de transporte público",
+                                     "20 minutos de transporte público",
+                                     "25 minutos de transporte público",
+                                     "30 minutos de transporte público"
+                   ),
+                   # position = "topleft",
+                   options = layersControlOptions(collapsed = TRUE)) %>%
+  hideGroup(c("5 minutos andando",
+              "10 minutos andando", 
+              "15 minutos andando", 
+              "20 minutos andando", 
+              "25 minutos andando", 
+              "30 minutos andando", 
+              "5 minutos de bicicleta",
+              "10 minutos de bicicleta",
+              "15 minutos de bicicleta",
+              "20 minutos de bicicleta",
+              "25 minutos de bicicleta",
+              "30 minutos de bicicleta",
+              "5 minutos de transporte público",
+              "10 minutos de transporte público",
+              "15 minutos de transporte público",
+              "20 minutos de transporte público",
+              "25 minutos de transporte público",
+              "30 minutos de transporte público"))
+```
+
+
+# Caso 2: Condomínio Residencial Spirare Lapa
+```{r}
+#
+leaflet(width = "100%",
+        height = 900) %>% 
+  # addTiles() %>%
+  addProviderTiles(
+    "OpenStreetMap",
+    # give the layer a name
+    group = "OpenStreetMap"
+  ) %>%
+  # A pé
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "WALK" & isochrone == 5),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "5 minutos andando", 
+              group = "5 minutos andando") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "WALK" & isochrone == 10),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "10 minutos andando", 
+              group = "10 minutos andando") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "WALK" & isochrone == 15),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "15 minutos andando", 
+              group = "15 minutos andando") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "WALK" & isochrone == 20),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "20 minutos andando", 
+              group = "20 minutos andando") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "WALK" & isochrone == 25),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "25 minutos andando", 
+              group = "25 minutos andando") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "WALK" & isochrone == 30),
+              color = "black",
+              popup = paste0(
+                "<b>Modal: </b> A pé <br>"),
+              layerId = "30 minutos andando", 
+              group = "30 minutos andando") %>%
+  # Bicicleta
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "BICYCLE" & isochrone == 5),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "5 minutos de bicicleta", 
+              group = "5 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "BICYCLE" & isochrone == 10),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "10 minutos de bicicleta", 
+              group = "10 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "BICYCLE" & isochrone == 15),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "15 minutos de bicicleta", 
+              group = "15 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "BICYCLE" & isochrone == 20),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "20 minutos de bicicleta", 
+              group = "20 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "BICYCLE" & isochrone == 25),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "25 minutos de bicicleta", 
+              group = "25 minutos de bicicleta") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "BICYCLE" & isochrone == 30),
+              color = "blue",
+              popup = paste0(
+                "<b>Modal: </b> Bicicleta <br>"),
+              layerId = "30 minutos de bicicleta", 
+              group = "30 minutos de bicicleta") %>%
+  # Transporte público
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "TRANSIT" & isochrone == 5),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "5 minutos de transporte público", 
+              group = "5 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "TRANSIT" & isochrone == 10),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "10 minutos de transporte público", 
+              group = "10 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "TRANSIT" & isochrone == 15),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "15 minutos de transporte público", 
+              group = "15 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "TRANSIT" & isochrone == 20),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "20 minutos de transporte público", 
+              group = "20 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "TRANSIT" & isochrone == 25),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "25 minutos de transporte público", 
+              group = "25 minutos de transporte público") %>%
+  addPolygons(data = isocronas_caso_2 %>%
+                filter(mode == "TRANSIT" & isochrone == 30),
+              color = "firebrick",
+              popup = paste0(
+                "<b>Modal: </b> Transporte Público <br>"),
+              layerId = "30 minutos de transporte público", 
+              group = "30 minutos de transporte público") %>%
+  # Amenidades
+  # addMarkers(data = amenidades_casos,
+  #            icon = ,
+  #            clusterOptions = markerClusterOptions()) %>%
+  addAwesomeMarkers(
+    data = amenidades_caso_2,
+    icon = ~iconSet,
+    clusterOptions = markerClusterOptions(),
+    popup = paste0(
+      "<b>Amenidade: </b>", amenidades_caso_2$VenueName,"<br>",
+      "<b>Classe: </b>", amenidades_caso_2$ClassName,"<br>",
+      "<b>Categoria: </b>", amenidades_caso_2$CatName,"<br>",
+      "<b>Aberto em: </b>", month.abb[amenidades_caso_2$OpenMonth], "-",
+      amenidades_caso_2$OpenYear,"<br>")
+    ) %>%
+  # Licenciamento
+  addMarkers(
+    data = caso_2,
+    popup = paste0(
+      "<b>Empreendimento: </b> Condomínio Residencial Spirare Lapa <br>",
+      "<b>Indicador de acesso a oportunidades: </b>", caso_2$acessibilidade_r5r,"<br>",
+      "<b>Faixa de acesso a oportunidades: </b>", caso_2$fx_acessibilidade_empregos, "<br>",
+      "<b>Unidades: </b>", caso_2$n_unidades, "<br>",
+      "<b>Blocos: </b>", caso_2$n_blocos, "<br>",
+      "<b>Pavimentos: </b>", caso_2$n_pavimentos_por_bloco, "<br>",
+      "<b>Cota-parte: </b>", round(caso_2$cota_parte, 1), "<br>",
+      "<b>CA máximo: </b>", caso_2$ca_maximo, "<br>",
+      "<b>CA total: </b>", round(caso_2$ca_total, 1), "<br>",
+      '<b>Fotos: </b><a href = "https://www.google.com.br/maps/@-23.5184974,-46.6935653,3a,75y,259.75h,87.61t/data=!3m7!1e1!3m5!1sLN5_DUmMOBJepCSuKqid8Q!2e0!6shttps:%2F%2Fstreetviewpixels-pa.googleapis.com%2Fv1%2Fthumbnail%3Fpanoid%3DLN5_DUmMOBJepCSuKqid8Q%26cb_client%3Dmaps_sv.tactile.gps%26w%3D203%26h%3D100%26yaw%3D14.402748%26pitch%3D0%26thumbfov%3D100!7i16384!8i8192"> Google Street View </a><br>'
+    ),
+    # icon = myIcon,
+    label = "Condomínio Residencial Spirare Lapa",
+    group = "addMarkers"
+  ) %>%
+  addLayersControl(baseGroups = c("Isócronas"), 
+                   overlayGroups = c("5 minutos andando",
+                                     "10 minutos andando", 
+                                     "15 minutos andando", 
+                                     "20 minutos andando", 
+                                     "25 minutos andando", 
+                                     "30 minutos andando", 
+                                     "5 minutos de bicicleta",
+                                     "10 minutos de bicicleta",
+                                     "15 minutos de bicicleta",
+                                     "20 minutos de bicicleta",
+                                     "25 minutos de bicicleta",
+                                     "30 minutos de bicicleta",
+                                     "5 minutos de transporte público",
+                                     "10 minutos de transporte público",
+                                     "15 minutos de transporte público",
+                                     "20 minutos de transporte público",
+                                     "25 minutos de transporte público",
+                                     "30 minutos de transporte público"
+                   ),
+                   # position = "topleft",
+                   options = layersControlOptions(collapsed = TRUE)) %>%
+  hideGroup(c("5 minutos andando",
+              "10 minutos andando", 
+              "15 minutos andando", 
+              "20 minutos andando", 
+              "25 minutos andando", 
+              "30 minutos andando", 
+              "5 minutos de bicicleta",
+              "10 minutos de bicicleta",
+              "15 minutos de bicicleta",
+              "20 minutos de bicicleta",
+              "25 minutos de bicicleta",
+              "30 minutos de bicicleta",
+              "5 minutos de transporte público",
+              "10 minutos de transporte público",
+              "15 minutos de transporte público",
+              "20 minutos de transporte público",
+              "25 minutos de transporte público",
+              "30 minutos de transporte público"))
+
+```
+
+
+```{r}
+#
+# ggplot() +
+#   geom_sf(data = sp_rede_viara,
+#           alpha = 0.8, show.legend = FALSE) +
+#   geom_sf(data = isocronas_caso_2 %>%
+#             filter(mode == "WALK"), fill = "black", alpha = 0.5) +
+#   geom_sf(data = isocronas_caso_2 %>%
+#             filter(mode == "BICYCLE"), fill = "blue", alpha = 0.5) +
+#   geom_sf(data = isocronas_caso_2 %>%
+#             filter(mode == "TRANSIT"), fill = "firebrick", alpha = 0.5) +
+#   geom_sf(data = caso_2, color = "red", shape = 4, size = 5) +
+#   scale_size(range = c(0.1, 0.5)) +
+#   facet_wrap(~mode) +
+#   labs(title = "Caso 2 - Condomínio Residencial Spirare Lapa",
+#        subtitle = "Isócronas de 15 minutos a pé, de bicicleta e de transporte público") +
+#   coord_sf(xlim = c(bbbox_bike_caso_2$xmin, bbbox_bike_caso_2$xmax), 
+#            ylim = c(bbbox_bike_caso_2$ymin, bbbox_transit_caso_2$ymax)) +
+#   theme_bw()
+
+```
+

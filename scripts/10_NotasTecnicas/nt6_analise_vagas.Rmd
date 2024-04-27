@@ -1,0 +1,853 @@
+---
+title: "Análise da evolução de vagas de garagem na cidade de São Paulo"
+author: "Por Adriano Borges e Evandro Luis"
+date: "Em `r format(Sys.time(), '%d de %B de %Y')`"
+---
+
+```{css, echo=FALSE}
+
+.list-group-item.active, .list-group-item.active:hover, .list-group-item.active:focus {
+background-color: #bcbec0;
+border-color: #bcbec0;
+}
+
+.nav>li>a {
+color: #f69679;
+}
+
+body {
+text-align: justify;
+}
+
+#TOC {
+text-align: left;
+background: url("https://www.insper.edu.br/wp-content/uploads/2019/11/logo-insper-arqfuturo-2.png");
+background-size: contain;
+padding-top: 80px !important;
+background-repeat: no-repeat;
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, tidy = TRUE, 
+                      fig.dim=c(16,14), fig.retina = 2)
+
+
+```
+
+```{r}
+#
+options(scipen = 99999)
+
+#
+options(ggplot2.discrete.colour = c("#c4161c", "#009491"),
+        ggplot2.discrete.fill = c("#c4161c", "#009491"))
+```
+
+
+```{r}
+library(here)
+library(sf)
+library(sfarrow)
+library(tidyverse)
+library(lubridate)
+library(readxl)
+library(tidylog)
+library(patchwork)
+library(ggthemes)
+library(ggtext)
+library(ggrepel)
+```
+
+
+```{r include=FALSE}
+# Importa Dados
+# embraesp_por_empreendimento <- st_read(here("inputs", "Lancamentos", "Embraesp", "ArquivosTratados",
+#                          "Embraesp.shp")) %>%
+#   set_names(as_vector(read_csv(here("inputs", "Lancamentos", "Embraesp", "ArquivosTratados",
+#                                     "EmbraespLabels.csv"), show_col_types = FALSE))) %>%
+#   mutate(zoneamento_grupo = fct_relevel(zoneamento_grupo,
+#                                         c("ZCs&ZMs", "EETU", "ZEIS-Aglomerado", 
+#                                           "ZEIS-Vazio", "Outros")),
+#          fx_area_terreno = fct_reorder(fx_area_terreno, area_terreno),
+#          fx_cota_parte = fct_reorder(fx_cota_parte, cota_parte),
+#          fx_area_util = case_when(
+#            area_util*0.95/n_unidades < 30 ~ "Menos de 30m²",
+#            area_util*0.95/n_unidades >= 30 ~ "Mais de 30m²") %>%
+#            fct_rev())
+
+
+#
+embraesp_por_empreendimento <- sfarrow::st_read_parquet(here("inputs", "2_trusted", "Lancamentos",
+                                          "embraesp_por_empreendimento.parquet")) %>%
+  mutate(zoneamento_grupo = fct_relevel(zoneamento_grupo,
+                                        c("ZCs&ZMs", "EETU", "ZEIS-Aglomerado", 
+                                          "ZEIS-Vazio", "Outros")),
+         fx_area_terreno = fct_reorder(fx_area_terreno, area_terreno),
+         fx_cota_parte = fct_reorder(fx_cota_parte, cota_parte),
+         fx_area_util = case_when(
+           area_util/n_unidades < 35 ~ "Menos de 35m²",
+           area_util/n_unidades >= 35 ~ "Mais de 35m²") %>%
+           fct_rev(),
+         fx_area_comp = case_when(
+           area_comp/n_unidades < 30 ~ "Menos de 30m²",
+           area_comp/n_unidades >= 30 ~ "Mais de 30m²") %>%
+           fct_rev()
+         )
+
+#
+embraesp <- sfarrow::st_read_parquet(
+ here("inputs", "2_trusted", "Lancamentos",
+       "embraesp.parquet")) %>%
+  filter(origem == "RESIDENCIAL") # Tomando somente empreendimentos residenciais
+
+
+
+```
+
+# Geral
+
+## Vagas por unidade
+```{r}
+# 
+plot_vagas_por_unidade_sp_vs_eetu <-
+  ggplot(data = embraesp_por_empreendimento %>% 
+           filter(ano >= 2009) %>%
+           group_by(ano) %>% 
+           summarise(local = "SP",
+                     n_empreendimentos = n_distinct(id_empreendimento),
+                     n_unidades = sum(n_unidades),
+                     vagas = sum(vagas),
+                     vagas_por_unidade = mean(vagas/n_unidades))) +
+  geom_col(aes(ano, vagas_por_unidade), 
+           position = "dodge", color = "black") +
+  geom_label(aes(ano, vagas_por_unidade,
+                 label = round(vagas_por_unidade, 1)),
+             position = position_dodge(1),
+             vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 1.8)) +
+  scale_fill_manual(values = c("EETU" = "#F58220", "SP" = "grey50")) +
+  # theme_minimal(base_size = 16, base_family = "lato") +
+  # theme_few(base_size = 18, 
+  #           base_family = "lato") +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 16, face = "italic")) +
+  labs(title = "Evolução da média de vagas por unidade lançada",
+       subtitle = "As vagas por unidade têm tendência de queda desde antes da aprovação do PDE e se intensificam a partir \nde 2016",
+       # x = "", y = "",
+       x = "Ano de lançamento do empreendimento",
+       y = "Média de vagas de garagem por unidade",
+       fill = "")
+
+#
+(plot_vagas_por_unidade_sp_vs_eetu) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 16, hjust = 1))
+  )
+
+
+```
+
+
+# Eixos
+
+
+## Unidades por empreendimento
+```{r}
+#
+plot_eetu_media_unidades <-
+  ggplot(data = embraesp_por_empreendimento %>% 
+           filter(ano >= 2009 & zoneamento_grupo == "EETU") %>%
+           group_by(ano) %>% 
+           summarise(n_empreendimentos = n_distinct(id_empreendimento),
+                     n_unidades_media = mean(n_unidades)
+                     )) +
+  geom_col(aes(ano, n_unidades_media),
+           fill = "#F58220",
+           color = "black", position = "dodge") +
+  geom_label(aes(ano, n_unidades_media,
+                 label = round(n_unidades_media, 1)),
+             position = position_dodge(1),
+             vjust = -.5, size = 5
+  ) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 250)) +
+  scale_fill_manual(values = c("grey50", "grey75")) +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 16, face = "italic")) +
+  labs(
+    title = "Evolução da média de unidades por empreendimento lançado nos eixos",
+    subtitle = "Número médio de unidades por empreendimento cresce nos eixos após 2016",
+    x = "Ano de lançamento do empreendimento", 
+    y = "Média do número médio de unidades por empreendimento")
+
+#
+(plot_eetu_media_unidades) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 16, hjust = 1))
+  )
+
+
+```
+
+
+
+## Desvio-padrão da área útil
+```{r}
+#
+plot_eetu_dp_area <-
+  ggplot(data = embraesp_por_empreendimento %>% 
+           filter(ano >= 2009 & zoneamento_grupo == "EETU") %>%
+           group_by(ano) %>% 
+           summarise(area_util_dp = mean(area_util_dp))) +
+  geom_line(aes(ano, area_util_dp),
+            color = "#F58220") +
+  geom_label(aes(ano, area_util_dp,
+                 label = round(area_util_dp, 1)),
+             vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 23),
+                     labels = function(x)paste0(x, " m²")) +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 16, face = "italic")) +
+  labs(title = "Evolução do desvio-padrão da área útil das unidades por empreendimento \nlançado nos eixos",
+       subtitle = "Aumento indica maiores diferenças de metragem entre unidades de um mesmo empreendimento",
+       x = "Ano de lançamento do empreendimento", y = "Média do desvio-padrão da área útil das unidades por empreendimento")
+
+(plot_eetu_dp_area) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 16, hjust = 1))
+  )
+```
+
+## Unidades por área útil
+```{r}
+#
+plot_eetu_unidades_por_area <-
+  ggplot(data = embraesp %>% 
+           filter(ano >= 2009 & zoneamento_grupo == "EETU") %>%
+           group_by(fx_area_util, ano) %>% 
+           summarise(n_empreendimentos = n_distinct(id_empreendimento),
+                     n_unidades = sum(num_total_),
+                     vagas = sum(vagas*num_total_),
+                     vagas_por_unidade = mean(vagas/n_unidades))) +
+  geom_col(aes(ano, n_unidades, group = fx_area_util, fill = fx_area_util), 
+           color = "black", position = "dodge") +
+  geom_label(aes(ano, n_unidades,
+                 group = fx_area_util,
+                 label = round(n_unidades, 1)),
+             position = position_dodge(1),
+             alpha = 0.7,
+             vjust = -.5, size = 5
+  ) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 17000)) +
+  scale_fill_manual(values = c("#F58220", "#fbcca3")) +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 14, face = "italic")) + theme(legend.position = "bottom") +
+  labs(
+    title = "Evolução do número de unidades com menos e mais de 35m² nos eixos",
+    subtitle = "O crescimento de unidades com menos de 35m² é intenso a partir de 2018",
+    x = "Ano de lançamento do empreendimento", 
+    y = "Número de unidades lançadas", fill = "")
+
+#
+(plot_eetu_unidades_por_area) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 14, hjust = 1))
+  )
+
+
+```
+
+
+
+
+## Média da área útil da unidade
+```{r}
+plot_eetu_media_area <-
+  ggplot(data = embraesp_por_empreendimento %>% 
+           filter(ano >= 2009 & zoneamento_grupo == "EETU") %>%
+           group_by(ano) %>% 
+           summarise(area_util_media = mean(area_util_media))) +
+  geom_line(aes(ano, area_util_media), color = "#F58220") +
+  geom_label(aes(ano, area_util_media,
+                 label = round(area_util_media, 1)),
+             vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 100),
+                     labels = function(x) paste0(x, " m²")) +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 14, face = "italic")) + 
+  labs(title = "Evolução da área útil média das unidades lançadas nos eixos",
+       subtitle = "Queda indica unidades de tamanho menores sendo produzidas nos eixos",
+       x = "Ano de lançamento do empreendimento", 
+       y = "Média da área útil das unidades em m²")
+
+(plot_eetu_media_area) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 14, hjust = 1))
+  )
+```
+
+
+## Vagas
+```{r}
+#
+plot_eetu_vagas <-
+  ggplot(data = embraesp_por_empreendimento %>% 
+           filter(ano >= 2009 & zoneamento_grupo == "EETU") %>%
+           group_by(ano) %>% 
+           summarise(#n_empreendimentos = n_distinct(id_empreendimento),
+             #n_unidades = sum(num_total_),
+             #vagas = sum(vagas*num_total_),
+             vagas = sum(vagas),
+             vagas_por_unidade = mean(vagas/n_unidades))) +
+  geom_col(aes(ano, vagas),
+           fill = "#F58220",
+           color = "black", position = "dodge") +
+  geom_label(aes(ano, vagas,
+                 # group = fx_area_util,
+                 label = round(vagas, 1)),
+             position = position_dodge(1),
+             vjust = -.5, size = 5
+  ) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 18500)) +
+  # scale_fill_viridis_d(option = "cividis") +
+  # scale_fill_manual(values = c("grey50", "grey75")) +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 14, face = "italic")) +  theme(legend.position = "bottom") +
+  labs(
+    title = "Evolução do número de vagas em empreendimentos lançados nos eixos",
+    subtitle = "A construção de vagas cresce após 2018, mas está associada ao crescimento de unidades lançadas",
+    x = "Ano de lançamento do empreendimento", 
+    y = "Número de vagas de garagem por unidade", fill = "")
+
+(plot_eetu_vagas) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 14, hjust = 1))
+  )
+```
+
+## Vagas por unidade
+```{r}
+#
+plot_eetu_media_vagas_por_unidade <-
+  ggplot(data = embraesp_por_empreendimento %>% 
+           filter(ano >= 2009 & zoneamento_grupo == "EETU") %>%
+           group_by(ano) %>% 
+           summarise(n_empreendimentos = n_distinct(id_empreendimento),
+                     n_unidades = sum(n_unidades),
+                     vagas = sum(vagas),
+                     vagas_por_unidade = mean(vagas/n_unidades))) +
+  geom_col(aes(ano, vagas_por_unidade), 
+           fill = "#F58220",
+           color = "black") +
+  geom_label(aes(ano, vagas_por_unidade,
+                 label = round(vagas_por_unidade, 1)),
+             vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 1.8)) +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 14, face = "italic")) +
+  labs(title = "Evolução da média de vagas por unidade lançada nos eixos",
+       subtitle = "As vagas por unidade apresentam tendência de queda desde antes da aprovação do PDE e se intensificam \na partir de 2016",
+       x = "Ano de lançamento do empreendimento", 
+       y = "Média de vagas de garagem por unidade")
+
+#
+(plot_eetu_media_vagas_por_unidade) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 14, hjust = 1))
+  )
+```
+
+
+
+# Cenários
+
+## Evolução máximo de vagas - minuta 1
+```{r}
+#
+df1 <- embraesp_por_empreendimento %>% 
+  st_drop_geometry() %>%
+  filter(ano >= 2019 & zoneamento_grupo == "EETU") %>%
+  mutate(
+    # Pressuposto: vagas = limite de vagas = número de unidades
+    vagas = n_unidades,
+    vagas_studio = n_unidades_area_util_menos_35m2,
+    
+    # Cenário 2
+    vagas_nova_regra_1 = round(area_comp_acima_30m2/70),
+    vagas_presumidas_1 = if_else(
+      # vagas nova regra >= vagas na regra atual - vagas de estúdio
+      vagas_nova_regra_1 >= (vagas-vagas_studio),
+      vagas_nova_regra_1, (vagas-vagas_studio)),
+    
+    # Cenário 3
+    vagas_nova_regra_2 = round((area_comp)/70),
+    vagas_presumidas_2 = if_else(
+      vagas_nova_regra_2 >= vagas,
+      vagas_nova_regra_2, (vagas))
+  ) %>%
+  select(
+    id_empreendimento, ano, zoneamento_grupo, n_unidades, 
+    n_unidades_area_util_menos_35m2, area_comp, area_util_acima_35m2, 
+    vagas, vagas_presumidas_1, vagas_presumidas_2) %>%
+  group_by(ano) %>%
+  dplyr::summarise(
+    "Cenário 1 (regra atual)" = sum(vagas),
+    "Cenário 2 (regra proposta)" = sum(vagas_presumidas_1),
+    "Cenário 3 (regra proposta com mercado adaptado)" = sum(vagas_presumidas_2)) %>%
+  pivot_longer(-c(ano), values_to = "n")
+
+#
+plot_eetu_cenarios_1 <-
+  ggplot(data = df1) +
+  geom_col(aes(ano, n, group = name, fill = name),
+           color = "black", position = "dodge") +
+  geom_label(aes(ano, n,
+                 group = name,
+                 label = round(n, 1)),
+             position = position_dodge(1),
+             vjust = -.5, size = 5
+  ) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 32000)) +
+  scale_fill_manual(values = c("#f58220", "#f8ab69", "#c05d09")) +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 14, face = "italic"),
+        plot.caption = element_markdown()) +
+  labs(
+    title = "Diferentes cenários de limites de vagas não computáveis nos eixos",
+    subtitle = "O número máximo de vagas não computáveis cai no cenário sem nenhum ajuste de mercado, mas \ncresce 7% caso o mercado deixe de produzir estúdios com menos de 35m² de área útil",
+    x = "Ano de lançamento do empreendimento", 
+    y = "Limite de vagas não computáveis",
+    fill = "Cenários: ",
+    caption = "**Obs.: Supõe-se mesmo número de unidades e mesma área média entre os cenários*")
+
+#
+(plot_eetu_cenarios_1) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 14, hjust = 1.0))
+  )
+
+```
+
+
+## Evolução máximo de vagas - minuta 2
+```{r}
+#
+df1 <- embraesp_por_empreendimento %>% 
+  st_drop_geometry() %>%
+  filter(ano >= 2019 & zoneamento_grupo == "EETU") %>%
+  mutate(
+    # Pressuposto: vagas = limite de vagas = número de unidades
+    vagas = n_unidades,
+    vagas_studio = n_unidades_area_comp_menos_30m2,
+    
+    # Cenário 2
+    vagas_nova_regra_1 = round(area_comp_acima_30m2/60),
+    vagas_presumidas_1 = if_else(
+      # vagas nova regra >= vagas na regra atual - vagas de estúdio
+      vagas_nova_regra_1 >= (vagas-vagas_studio),
+      vagas_nova_regra_1, (vagas-vagas_studio)),
+    
+    # Cenário 3
+    vagas_nova_regra_2 = round((area_comp)/60),
+    vagas_presumidas_2 = if_else(
+      vagas_nova_regra_2 >= vagas,
+      vagas_nova_regra_2, (vagas))
+  ) %>%
+  select(
+    id_empreendimento, ano, zoneamento_grupo, n_unidades, 
+    n_unidades_area_comp_menos_30m2, area_comp, area_comp_acima_30m2, 
+    vagas, vagas_presumidas_1, vagas_presumidas_2) %>%
+  group_by(ano) %>%
+  dplyr::summarise(
+    "Cenário 1 (regra atual)" = sum(vagas),
+    "Cenário 2 (regra proposta)" = sum(vagas_presumidas_1),
+    "Cenário 3 (regra proposta com mercado adaptado)" = sum(vagas_presumidas_2)) %>%
+  pivot_longer(-c(ano), values_to = "n")
+
+#
+plot_eetu_cenarios_2 <-
+  ggplot(data = df1) +
+  geom_col(aes(ano, n, group = name, fill = name),
+           color = "black", position = "dodge") +
+  geom_label(aes(ano, n,
+                 group = name,
+                 label = round(n, 1)),
+             position = position_dodge(1),
+             vjust = -.5, size = 5
+  ) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 32000)) +
+  scale_fill_manual(values = c("#f58220", "#f8ab69", "#c05d09")) +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 14, face = "italic"),
+        plot.caption = element_markdown()) +
+  labs(
+    title = "Diferentes cenários de limites de vagas não computáveis nos eixos",
+    subtitle = "O número máximo de vagas não computáveis cai no cenário sem nenhum ajuste de mercado, mas \ncresce 12% caso o mercado deixe de produzir estúdios com menos de 30m² de área computável",
+    x = "Ano de lançamento do empreendimento", 
+    y = "Limite de vagas não computáveis",
+    fill = "Cenários: ",
+    caption = "**Obs.: Supõe-se mesmo número de unidades e mesma área média entre os cenários*")
+
+#
+(plot_eetu_cenarios_2) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 14, hjust = 1.0))
+  )
+
+```
+
+## Evolução máximo de vagas - minuta 1 vs minuta 2
+```{r}
+#
+df1 <- embraesp_por_empreendimento %>% 
+  st_drop_geometry() %>%
+  filter(ano >= 2019 & zoneamento_grupo == "EETU") %>%
+  mutate(
+    # Pressuposto: vagas = limite de vagas = número de unidades
+    vagas = n_unidades,
+
+    # Cenário 3 minuta 1
+    vagas_nova_regra_1 = round((area_comp)/70),
+    vagas_presumidas_1 = if_else(
+      vagas_nova_regra_1 >= vagas,
+      vagas_nova_regra_1, (vagas)),
+    
+    # Cenário 3 minuta 2
+    vagas_nova_regra_2 = round((area_comp)/60),
+    vagas_presumidas_2 = if_else(
+      vagas_nova_regra_2 >= vagas,
+      vagas_nova_regra_2, (vagas))
+  ) %>%
+  select(
+    id_empreendimento, ano, zoneamento_grupo, n_unidades, 
+    n_unidades_area_comp_menos_30m2, area_comp, area_comp_acima_30m2, 
+    vagas, vagas_presumidas_1, vagas_presumidas_2) %>%
+  group_by(ano) %>%
+  dplyr::summarise(
+    "Regra atual" = sum(vagas),
+    "Regra proposta minuta prévia de 13/01/23" = sum(vagas_presumidas_1),
+    "Regra proposta minuta projeto de lei de 20/03/23" = sum(vagas_presumidas_2)) %>%
+  pivot_longer(-c(ano), values_to = "n")
+
+#
+plot_eetu_cenarios_3 <-
+  ggplot(data = df1) +
+  geom_col(aes(ano, n, group = name, fill = name),
+           color = "black", position = "dodge") +
+  geom_label(aes(ano, n,
+                 group = name,
+                 label = round(n, 1)),
+             position = position_dodge(1),
+             vjust = -.5, size = 5
+  ) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 35000)) +
+  scale_fill_manual(values = c("#f58220", "#c05d09", "#733705")) +
+  theme_minimal(base_size = 20, 
+                base_family = "lato") +
+  theme(legend.position = c(0.25, 0.95),
+        legend.direction = "vertical",
+        # legend.text = element_text(size = 12),
+        # legend.title = element_text(size = 12),
+        # plot.subtitle = element_text(size = 16),
+        axis.title = element_text(size = 14, face = "italic"),
+        plot.caption = element_markdown()) +
+  labs(
+    title = "Diferentes cenários de limites de vagas incentivadas nos eixos",
+      subtitle = "Estima-se que o número máximo de vagas não computáveis crescerá 12% com a nova regra proposta \npela prefeitura na minuta de lei enviada em 20 de março à Câmara de Vereadores",
+    x = "Ano de lançamento do empreendimento", 
+    y = "Limite de vagas não computáveis",
+    fill = "",
+    caption = "**Obs.: Supõe-se mesmo número de unidades e mesma área média entre os cenários*")
+
+#
+(plot_eetu_cenarios_3) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 14, hjust = 1.0))
+  )
+
+```
+
+
+
+# Outros
+
+## Unidades por área útil
+```{r}
+
+#
+plot_vagas_por_unidade_por_area <-
+  ggplot(data = embraesp %>% 
+           filter(ano >= 2009) %>%
+           group_by(fx_area_util, ano) %>% 
+           summarise(n_empreendimentos = n_distinct(id_empreendimento),
+                     n_unidades = sum(num_total_),
+                     vagas = sum(vagas*num_total_),
+                     vagas_por_unidade = mean(vagas/n_unidades))) +
+  geom_col(aes(ano, n_unidades, group = fx_area_util, fill = fx_area_util), 
+           color = "black", position = "dodge") +
+  geom_label(aes(ano, n_unidades,
+                 group = fx_area_util,
+                 label = round(n_unidades, 1)),
+             position = position_dodge(1),
+             vjust = -.5, size = 5
+  ) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 50000)) +
+  # scale_fill_viridis_d(option = "cividis") +
+  scale_fill_manual(values = c("grey50", "grey75")) +
+  theme_minimal(base_size = 20, base_family = "lato") +
+  theme(legend.position = "bottom") +
+  labs(
+    title = "Número de unidades por faixa de área útil",
+    subtitle = "O total de unidades com menos que 30 m² cresce após o PDE",
+    x = "", y = "", fill = "")
+
+
+#
+(plot_vagas_por_unidade_por_area) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+  )
+
+
+```
+
+
+
+```{r}
+plot_serie_preco_m2 <- function(df, t0, var) {
+  df <- df %>% 
+    filter(ano >= t0) %>%
+    group_by(ano, !!enquo(var)) %>% 
+    summarise(n_empreendimentos = n_distinct(id_empreendimento),
+              n_unidades = n(),
+              preco_m2 = mean(preco_m2),
+              preco_m2_deflacionado = mean(preco_m2_deflacionado)) %>%
+    ungroup()
+  
+  return(ggplot(data = df) +
+           geom_point(aes(ano, preco_m2_deflacionado, color = {{var}}, 
+                          size = n_empreendimentos)) +
+           geom_line(aes(ano, preco_m2_deflacionado, color = {{var}}, group = {{var}})) +
+           geom_label_repel(aes(ano, preco_m2_deflacionado,
+                                label = scales::label_dollar(prefix = "R$",
+                                                             big.mark = ".", decimal.mark = ",")
+                                (round(preco_m2_deflacionado, 2)),
+                                group = {{var}}),
+                            #vjust = -.5, 
+                            size = 4, alpha = 0.8) +
+           scale_y_continuous(labels = scales::label_dollar(prefix = "R$", 
+                                                            big.mark = ".", decimal.mark = ",")) +
+           scale_x_continuous(limits = c(t0, 2021),
+                              breaks = seq(t0, 2021, 1))
+  )
+}
+
+```
+
+## Preço do m²
+```{r, out.width="100%", out.height="100%"}
+
+#
+plot_preco_m2 <-
+  plot_serie_preco_m2(
+    df = embraesp_por_empreendimento %>%
+      mutate(zoneamento_grupo = fct_other(zoneamento_grupo, 
+                                          keep = "EETU", other_level = "Outro")),
+    t0 = 2009, var = zoneamento_grupo) +
+  scale_color_manual(values = c("EETU" = "#F58220", "Outro" = "grey50")) +
+  scale_y_continuous(limits = c(0, 22000)) +
+  theme_minimal(base_size = 20, base_family = "lato") +
+  theme(legend.position = "right") +
+  labs(
+    x = "", y = "",
+    title = "Preço médio do m² dos empreendimentos - EETU vs outros zoneamentos",
+    subtitle = "Assim como nos demais zoneamentos, há uma queda do preço do m² em EETU's",
+    size = "Empreendimentos", color = "Zoneamento", caption = "Ano-base = 2021")
+
+
+#
+(plot_preco_m2) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+    theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+  )
+
+
+```
+
+
+## Distribuição área útil (eixos)
+```{r}
+ggplot(data = embraesp_por_empreendimento %>% 
+         filter(ano >= 2009 & zoneamento_grupo == "EETU") #%>%
+       # group_by(ano) %>% 
+       # summarise(area_util_dp = mean(area_util_dp))
+) +
+  geom_boxplot(aes(ano, area_util/n_unidades, group = ano), 
+               fill = "#F58220",
+               color = "black") +
+  # geom_label(aes(ano, area_util_dp,
+  #                label = round(area_util_dp, 1)),
+  #            vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 200)) +
+  theme_minimal(base_family = "lato", base_size = 20) +
+  labs(title = "Boxplots das áres úteis das unidades em EETU's",
+       subtitle = "Aumento da amplitude indica maiores diferenças entre as metragens das unidades",
+       x = "", y = "")
+```
+
+
+## Área de terreno (eixos)
+```{r}
+ggplot(data = embraesp_por_empreendimento %>% 
+         filter(ano >= 2009 & zoneamento_grupo == "EETU") %>%
+         group_by(ano) %>% 
+         summarise(area_terreno = mean(area_terreno))) +
+  geom_line(aes(ano, area_terreno), color = "#F58220") +
+  geom_label(aes(ano, area_terreno,
+                 label = round(area_terreno, 1)),
+             vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 2600)) +
+  theme_minimal(base_family = "lato", base_size = 20) +
+  labs(title = "Média das áreas de terreno dos empreendimentos nos eixos",
+       subtitle = "Há uma oscilação com ligeiro crescimento pós-PDE",
+       x = "", y = "")
+```
+
+## Vagas por unidade por faixa de área útil
+```{r}
+ggplot(data = embraesp %>% 
+         filter(ano >= 2018 & zoneamento_grupo == "EETU") %>%
+         group_by(fx_area_util, ano) %>% 
+         summarise(n_empreendimentos = n_distinct(id_empreendimento),
+                   n_unidades = sum(num_total_),
+                   vagas = sum(vagas*num_total_),
+                   vagas_por_unidade = mean(vagas/n_unidades))) +
+  geom_col(aes(ano, vagas_por_unidade, fill = fx_area_util), 
+           show.legend = FALSE, color = "black") +
+  geom_label(aes(ano, vagas_por_unidade,
+                 label = round(vagas_por_unidade, 1)),
+             vjust = -.5, size = 5) +
+  facet_wrap(~fx_area_util) +
+  scale_x_continuous(breaks = seq(2018, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 1.3)) +
+  scale_fill_manual(values = c("#F58220", "#fbcca3")) +
+  theme_minimal(base_size = 20) +
+  labs(title = "Média de vagas por unidade nos eixos por faixa de área útil",
+       subtitle = "A média de vagas é significativamente menor na faixa com menos de 30m²",
+       x = "", y = "")
+```
+
+
+```{r}
+
+## Evolução máximo de vagas período
+
+# #
+# df1 <- embraesp_por_empreendimento %>% 
+#   st_drop_geometry() %>%
+#   filter(ano >= 2019 & zoneamento_grupo == "EETU") %>%
+#   mutate(
+#     # Pressuposto: vagas = limite de vagas = número de unidades
+#     ano = "2019-2021",
+#     vagas = n_unidades,
+#     vagas_menos_30m2 = n_unidades_menos_30m2,
+#     
+#     # Cenário 2
+#     vagas_nova_regra_1 = round(area_util_acima_30m2/60),
+#     vagas_presumidas_1 = if_else(
+#       # vagas nova regra >= vagas na regra atual - vagas de estúdio
+#       vagas_nova_regra_1 >= (vagas-vagas_menos_30m2),
+#       vagas_nova_regra_1, (vagas-vagas_menos_30m2)),
+#     
+#     # Cenário 3
+#     vagas_nova_regra_2 = round((0.95*area_util)/60),
+#     vagas_presumidas_2 = if_else(
+#       vagas_nova_regra_2 >= vagas,
+#       vagas_nova_regra_2, (vagas))
+#   ) %>%
+#   select(
+#     id_empreendimento, ano, zoneamento_grupo, n_unidades, 
+#     n_unidades_menos_30m2, area_util, area_util_acima_30m2, 
+#     vagas, vagas_presumidas_1, vagas_presumidas_2) %>%
+#   group_by(ano) %>%
+#   dplyr::summarise(
+#     "Cenário 1 (regra atual)" = sum(vagas),
+#     "Cenário 2 (regra proposta)" = sum(vagas_presumidas_1),
+#     "Cenário 3 (regra proposta com mercado adaptado)" = sum(vagas_presumidas_2)) %>%
+#   pivot_longer(-c(ano), values_to = "n")
+# 
+# #
+# plot_eetu_cenarios_periodo <-
+#   ggplot(data = df1) +
+#   geom_col(aes(str_wrap(name, 20), n, group = str_wrap(name, 20), fill = name),
+#            color = "black", position = "dodge", show.legend = FALSE) +
+#   geom_label(aes(str_wrap(name, 20), n,
+#                  group = str_wrap(name, 20),
+#                  label = round(n, 1)),
+#              position = position_dodge(1),
+#              vjust = -.5, size = 5
+#   ) +
+#   scale_y_continuous(limits = c(0, 90000)) +
+#   scale_fill_manual(values = c("#f58220", "#f8ab69", "#c05d09")) +
+#   theme_minimal(base_size = 20) +
+#   theme(legend.position = "bottom",
+#         plot.caption = element_markdown()) +
+#   labs(
+#     title = "Limite de vagas nos eixos no período 2019-2021 - comparação regra atual e nova regra",
+#     subtitle = "O número máximo de vagas cai sob a nova regra, podendo oscilar para cima com adaptação do mercado",
+#     x = "", y = "",
+#     fill = "Cenários: ",
+#     caption = "**Obs.: Supõe-se mesmo número de unidades e mesma área média entre os cenários*")
+# 
+# #
+# (plot_eetu_cenarios_periodo) +
+#   plot_annotation(
+#     caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: EMBRAESP",
+#     theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+#   )
+
+```

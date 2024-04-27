@@ -1,0 +1,1094 @@
+---
+title: "Estudos de Caso Imobiliários - critérios de seleção"
+author: "Por Evandro Luis"
+date: "Em `r format(Sys.time(), '%d de %B de %Y')`"
+knit: (function(inputFile, encoding) { 
+      out_dir <- '../../outputs/Alvaras';
+      rmarkdown::render(inputFile,
+                        encoding=encoding, 
+                        output_file=file.path(dirname(inputFile), 
+                        out_dir, 'EstudoCasosCriterio.html')) })
+output: 
+  rmarkdown::html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: true
+    theme: united
+---
+
+```{css, echo=FALSE}
+
+.list-group-item.active, .list-group-item.active:hover, .list-group-item.active:focus {
+background-color: #bcbec0;
+border-color: #bcbec0;
+}
+
+.nav>li>a {
+color: #f69679;
+}
+
+body {
+text-align: justify;
+}
+
+#TOC {
+text-align: left;
+background: url("https://www.insper.edu.br/wp-content/uploads/2019/11/logo-insper-arqfuturo-2.png");
+background-size: contain;
+padding-top: 80px !important;
+background-repeat: no-repeat;
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, tidy = TRUE, 
+                      fig.dim=c(16,12), fig.retina = 2)
+```
+
+# Contexto
+
+Em 2014 a cidade de São Paulo aprovou a revisão de seu Plano Diretor Estratégico (PDE) por meio da Lei 16.020/2014, que trouxe algumas inovações reconhecidas e premiadas internacionalmente. Uma das mais destacadas novidades foi o estabelecimento dos Eixos de Estruturação da Transformação Urbana (EETU) com o objetivo de estimular o adensamento de locais de moradia e trabalho no entorno de infraestruturas de transporte de massa. 
+
+## Objetivos
+Como os lançamentos imobiliários evoluíram desde então? A presente análise tem por objetivo debater **critérios para focalização de casos para análise qualitativa**.
+
+# Dados
+O conjunto de dados `alvaras` é nosso ponto de partida para a análise da dinâmica do mercado imobiliário na cidade de São Paulo. 
+
+Este conjunto de dados contém informações sobre os alvarás de licenciamento registrados na cidade desde 2004 até o mês de novembro de 2021. Tendo o foco de análise em período recente, selecionamos os empreendimentos licenciados a partir de 2009.
+
+Os dados brutos são originados de informações cadastrais da Prefeitura de São Paulo e passaram por tratamento prévio da Associação Brasileira de Incorporadores Imobiliários - ABRAINC.
+
+É importante também ressaltar que o conjunto de dados contém dois grandes tipos de alvarás: alvarás de aprovação e alvarás de execução. Estando nossa análise restrita apenas aqueles empreendimentos que possuem os dois tipos de alvarás.
+
+## Framework
+
+A presente análise exploratória foi elaborada em `linguagem R` com intermédio da IDE `RStudio`. Além do uso dos algoritmos básicos disponibilizados no R, a análise recorreu também ao uso de algoritmos adicionais importados das seguintes livrarias/pacotes de repositórios públicos no CRAN:
+
+```{r library, echo=TRUE}
+library(here)
+library(sf)
+library(tidyverse)
+library(lubridate)
+library(skimr)
+library(stringr)
+library(tidyverse)
+library(sf)
+library(readxl)
+library(ggdist)
+library(ggtext)
+library(patchwork)
+library(ggrepel)
+library(ggthemes)
+library(scales)
+library(gt)
+```
+
+
+```{r import-data, include=FALSE}
+
+
+# Sistema de coordenadas Geográficas de referência SIRGAS 
+CRS <- "+proj=utm +zone=23 +south +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+
+#
+alvaras <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Licenciamentos",
+       "alvaras_por_lote.parquet")) %>%
+  mutate(porte = case_when(between(n_unidades, 0, 50) ~ "Pequeno porte",
+                           between(n_unidades, 50, 200) ~ "Médio porte",
+                           n_unidades > 200 ~ "Grande porte",
+                           TRUE ~ NA_character_),
+         fx_area_terreno = case_when(between(area_do_terreno, 0, 5000) ~ "0 a 5000 m²",
+                                     between(area_do_terreno, 5000, 10000) ~ "5000 a 10000 m²",
+                                     between(area_do_terreno, 10000, 20000) ~ "10000 a 20000 m²",
+                                     area_do_terreno > 20000 ~ "Mais que 20000 m2"),
+         fx_cota_parte = case_when(between(cota_parte, 0, 100) ~ "0 a 100 m² por UH",
+                                   between(cota_parte, 100, 1000) ~ "0 a 1000 m² por UH",
+                                   cota_parte > 1000 ~ "Mais que 1000 m² por UH"),
+         zoneamento_grupo = fct_relevel(zoneamento_grupo,
+                                        c("ZCs&ZMs", "EETU", "ZEIS-Aglomerado", 
+                                          "ZEIS-Vazio", "Outros"))) %>%
+  st_transform(crs = CRS)
+
+
+
+```
+
+
+```{r}
+# Definindo novo default de cores adequado à paleta de cores do Insper
+options(ggplot2.discrete.colour = c("#009491", "#c4161c"),
+        ggplot2.discrete.fill = c("#009491", "#c4161c"))
+
+#
+options(scipen=999)
+
+```
+
+## Conjunto de dados
+
+As tabelas abaixos trazem uma visão geral de uma amostra aleatória do conjunto de dados, bem como apresentam algumas de suas estatísticas descritivas básicas.
+
+```{r exploring}
+# Dando uma olhada no conjunto de dados
+alvaras %>%
+  mutate(long = st_coordinates(.)[,1],
+         lat = st_coordinates(.)[,2]) %>%
+  st_drop_geometry() %>%
+  slice_sample(n = 10) %>%
+  gt() %>%
+  tab_options(table.font.size = 10,
+              table.width = pct(100),
+              column_labels.font.weight = "bolder") 
+```
+
+## Geografia 
+
+Os mapas de São Paulo utilizados na análise são oriundos da plataforma GeoSampa e seguem o `CRS SIRGAS 2000`. 
+
+```{r import-layer, include=FALSE, cache=FALSE}
+
+# Os mapas de São Paulo utilizados na análise são oriundos da plataforma GeoSampa e seguem o `CRS SIRGAS 2000`. 
+
+
+# Subprefeituras
+##
+geo_sp_subprefeituras <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "subprefeituras.parquet")) %>%
+  mutate(
+    sp_nome = str_to_title(sp_nome),
+    X = map_dbl(geometry, ~st_centroid(.x)[[1]]),
+    Y = map_dbl(geometry, ~st_centroid(.x)[[2]])) %>%
+  st_transform(crs = CRS)
+
+
+# Bordas da Cidade
+BordasCidade <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "bordas_cidade.parquet"))
+
+# Rede de Ruas
+RedeRuas <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Transporte",
+       "rede_ruas.parquet"))
+
+
+# Corpos D'água
+CorposDagua <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "corpos_dagua.parquet"))
+
+# Áreas Verdes
+AreasVerdes <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "areas_verdes.parquet"))
+
+# Rios
+RiosPrincipais <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "rios_principais.parquet")) %>%
+  st_difference(CorposDagua)
+
+# Metro
+geo_sp_LinhaMetro <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Transporte",
+       "linha_metro.parquet"))
+
+# Ônibus
+geo_sp_CorredorOnibus <- corredor_onibus <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Transporte",
+       "corredor_onibus.parquet"))
+# Trem
+geo_sp_LinhaTrem <-  sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Transporte",
+       "linha_trem.parquet"))
+
+# Zoom na mancha urbana de São Paulo
+# geo_sp_cluster <- geo_sp_subprefeituras %>%
+#   # st_transform(crs = st_crs(alvaras)) %>%
+#   filter(sp_id %in% c(1:25))
+
+geo_sp_cluster <- st_bbox(c(xmin = -46.805, xmax = -46.38,
+                            ymin = -23.70, ymax = -23.395),
+                          crs = 4326) %>%
+  st_as_sfc() %>%
+  st_transform(crs = CRS)
+
+```
+
+
+```{r include=FALSE}
+# Criando mapa base de São Paulo
+geo_sp <- 
+  ggplot() +
+  geom_sf(data = geo_sp_subprefeituras, size = 0.25, color = "black", fill = "white") +
+  geom_sf(data = AreasVerdes, fill = "#00800C", alpha = 0.7, color = NA) +
+  geom_sf(data = CorposDagua, fill = "#191970", alpha = 0.7, color = NA) +
+  geom_sf(data = RiosPrincipais, color = "#191970") +
+  # geom_sf(data = RedeRuas, fill = "black", size = 0.15, alpha = 0.3) +
+  geom_sf(data = BordasCidade, alpha = 0.5, color = "black", fill = NA) +
+  labs(x = "", y ="") +
+  theme_bw(base_family = "lato", base_size = 14) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        plot.caption = element_markdown()) +
+  coord_sf(xlim = st_bbox(geo_sp_cluster)[c(1, 3)],
+           ylim = st_bbox(geo_sp_cluster)[c(2, 4)])
+
+# Mapa simplificado - sem marcação de cores adicionais (área verde e corpos d'agua)
+geo_sp_simple <- 
+  ggplot() +
+  geom_sf(data = geo_sp_subprefeituras, size = 0.25, color = "black", fill = "white") +
+  # geom_sf(data = RedeRuas, fill = "black", size = 0.15, alpha = 0.3) +
+  geom_sf(data = BordasCidade, alpha = 0.5, color = "black", fill = NA) +
+  labs(x = "", y ="") +
+  theme_bw(base_family = "lato", base_size = 14) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        plot.caption = element_markdown()) +
+  coord_sf(xlim = st_bbox(geo_sp_cluster)[c(1, 3)],
+           ylim = st_bbox(geo_sp_cluster)[c(2, 4)])
+
+
+#
+# rm(RedeRuas, RiosPrincipais, BordasCidade, CorposDagua, AreasVerdes, CorposDagua) %>%
+#   gc()
+
+```
+
+A camada base dos mapas apresentados na análise é referenciada na divisão administrativa em subprefeituras, sendo acrescidas de informações geográficas sobre as áreas verdes, corpos d`água, principais rios e a rede de ruas da cidade. 
+
+# Análise
+
+## Licenciamentos imobiliários
+
+### Visão geral
+
+```{r map-1.2}
+#
+geo_sp +
+  geom_sf(data = alvaras %>%
+            filter(between(ano_execucao, 2017, 2020)),
+          mapping = aes(color = categoria_de_uso_grupo,
+                        size = n_unidades),
+          alpha = .5,
+          show.legend = TRUE) +
+  scale_size_continuous(limits = c(1, 1700)) +
+  labs(
+    color = "",
+    size = "Número de unidades",
+    subtitle = "2017-2020",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo") +
+  theme(plot.subtitle = element_text(hjust = 0.5),
+        plot.caption = element_markdown(size = 12),
+        legend.position = c(0.7, 0.2),
+        legend.title = element_text(size = 12),
+        legend.box = "horizontal") +
+  coord_sf(xlim = st_bbox(geo_sp_cluster)[c(1, 3)],
+           ylim = st_bbox(geo_sp_cluster)[c(2, 4)])
+
+```
+
+
+### Agrupamentos espaciais
+
+```{r}
+## 2015-2020
+# plot_heatmap_2015.2020 <-
+geo_sp_simple +
+  stat_density2d(aes(st_coordinates(geometry)[,1],
+                     st_coordinates(geometry)[,2],
+                     fill = categoria_de_uso_grupo,
+                     alpha = ..level..),
+                 h = 1000,
+                 show.legend = TRUE,
+                 color = "grey",
+                 geom = "polygon",
+                 data = alvaras %>%
+                   filter(between(ano_execucao, 2017, 2020))) +
+  geom_text_repel(data = geo_sp_subprefeituras,
+                  aes(x = X, y = Y, label = sp_nome),
+                  size = 3,
+                  fontface = "bold") +
+  scale_alpha_continuous(range = c(0.2, 1), guide = "none") +
+  labs(subtitle  = "2017-2020") +
+  theme(plot.subtitle = element_text(hjust = 0.5),
+        legend.position = c(0.7, 0.2),
+        legend.title = element_blank()) +
+  coord_sf(xlim = st_bbox(geo_sp_cluster)[c(1, 3)],
+           ylim = st_bbox(geo_sp_cluster)[c(2, 4)])
+
+```
+
+
+## Porte
+
+### Distribuição percentual dos empreendimentos licenciados por porte do empreendimento (2017-2020)
+
+```{r, fig.dim=c(12, 8)}
+##
+plot_porte <-
+  st_drop_geometry(alvaras) %>%
+  mutate(porte = as.factor(case_when(n_unidades <= 50 ~ "Pequeno porte",
+                                     n_unidades > 50 ~ "Médio ou grande porte",
+                                     is.na(n_unidades) ~ as.character("Sem informação")))) %>%
+  # filter(porte != "Sem informação") %>%
+  count(porte, ano_execucao) %>%
+  group_by(ano_execucao) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(ano_execucao, n, fill = porte)) +
+  geom_bar(stat="identity", position = "fill", alpha = .5, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)),
+            position = position_fill(vjust = 0.5),
+            size = 3) +
+  # scale_fill_grey() +
+  scale_fill_manual(values = c("#bcbec0", "#e6e7e8", NA)) +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  scale_x_continuous(limits = c(2016.5, 2020.5), breaks = seq(2009, 2020, 1)) +
+  labs(title = "",
+       x = "",
+       y = "",
+       caption = "*Obs: Até 50 unidades = pequeno porte | Mais que 50 unidades = Médio ou grande porte* <br>") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        legend.title = element_blank(),
+        plot.caption = element_markdown(10),
+        legend.position = "top",
+        legend.justification = "left")
+
+##
+(plot_porte) + 
+  plot_annotation(
+    # title = "Distribuição percentual dos licenciamentos por porte do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 16, face = "bold"),
+                 plot.caption = element_markdown(size = 12))
+  )
+
+```
+
+### Média de unidades dos empreendimentos de pequeno porte por tipo do empreendimento - 2017-2020
+
+```{r}
+# Pequenos por ERM vs ERP
+plot_unidades_por_uso_por_porte <-
+  alvaras %>%
+  filter(!is.na(porte)) %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(porte == "Pequeno porte") %>%
+  ggplot(aes(categoria_de_uso_grupo, n_unidades, 
+             fill = categoria_de_uso_grupo, 
+             group = categoria_de_uso_grupo)) +
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA
+  ) +
+  stat_summary(
+    colour="black", geom="label", fill = "white", alpha = .4, 
+    fun.data = n_fun <- function(x){
+      return(data.frame(y = quantile(x, 0.75) - 1.75, 
+                        label = paste0("n = ",length(x))))
+    },
+    size = 5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .6, 
+    ## add some transparency
+    alpha = .2
+  ) +
+  scale_y_continuous(breaks = seq(0, 50, 10),
+                     labels = function(x) paste0(x, " UH's")) +
+  # coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip() +
+  # facet_wrap(~ porte, ncol = 1, scales = "free_x") +
+  labs(#title = "Média de unidades dos empreendimentos de pequeno porte por tipo do empreendimento - 2017-2020",
+    x = "",
+    y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0.5, face = "plain", size = 18),
+        plot.caption = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal") 
+
+#
+plot_unidades_por_uso_por_porte +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 20, face = "bold"),
+                 plot.caption = element_markdown(size = 16))
+  )
+```
+
+### Média de unidades dos empreendimentos de médio/grande porte por tipo do empreendimento - 2017-2020
+
+```{r}
+# Grandes por ERM vs ERP
+plot_unidades_por_uso_por_porte <-
+  alvaras %>%
+  filter(!is.na(porte)) %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  # filter(porte == "Pequeno porte") %>%
+  filter(porte %in% c("Médio porte", "Grande porte")) %>%
+  ggplot(aes(categoria_de_uso_grupo, n_unidades, 
+             fill = categoria_de_uso_grupo, 
+             group = categoria_de_uso_grupo)) +
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA
+  ) +
+  stat_summary(
+    colour="black", geom="label", fill = "white", alpha = .4, 
+    fun.data = n_fun <- function(x){
+      return(data.frame(y = median(x), 
+                        label = paste0("n = ",length(x))))
+    },
+    size = 5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .6, 
+    ## add some transparency
+    alpha = .2
+  ) +
+  scale_y_continuous(#breaks = seq(0, 50, 10),
+    labels = function(x) paste0(x, " UH's")) +
+  # coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip() +
+  # facet_wrap(~ porte, ncol = 1, scales = "free_x") +
+  labs(#title = "Média de unidades dos empreendimentos de médio/grande porte por tipo do empreendimento - 2017-2020",
+    x = "",
+    y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0.5, face = "plain", size = 18),
+        plot.caption = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal") 
+
+#
+plot_unidades_por_uso_por_porte +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 20, face = "bold"),
+                 plot.caption = element_markdown(size = 16))
+  )
+```
+
+### Média de unidades dos empreendimentos de pequeno porte por grupo de zoneamento - 2017-2020
+
+```{r}
+# pequenos por zoneamento
+plot_unidades_por_uso_por_porte <-
+  alvaras %>%
+  filter(!is.na(porte)) %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(porte == "Pequeno porte") %>%
+  ggplot(aes(fct_reorder(zoneamento_grupo, n_unidades), n_unidades, 
+             fill = zoneamento_grupo, 
+             group = zoneamento_grupo)) +
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA
+  ) +
+  stat_summary(
+    colour="black", geom="label", fill = "white", alpha = .4, 
+    fun.data = n_fun <- function(x){
+      return(data.frame(y = median(x), 
+                        label = paste0("n = ",length(x))))
+    },
+    size = 5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .6, 
+    ## add some transparency
+    alpha = .2
+  ) +
+  scale_y_continuous(#breaks = seq(0, 50, 10),
+    labels = function(x) paste0(x, " UH's")) +
+  # scale_fill_manual(values = c("#3CBFAE","#F58220", "#E80724", "#F69679", "#414042")) +
+  scale_fill_manual(values = c(
+    "ZCs&ZMs" = "#3CBFAE", "EETU" = "#F58220", "EETU Futuros" = "#f6bf38",
+    "ZEIS Aglomerado" = "#E80724", "ZEIS Vazio" = "#F69679", 
+    "Outros" = "#414042")) +
+  # coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip() +
+  # facet_wrap(~ porte, ncol = 1, scales = "free_x") +
+  labs(#title = "Média de unidades dos empreendimentos de médio/grande porte por grupo de zoneamento - 2017-2020",
+    x = "",
+    y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0.5, face = "plain", size = 18),
+        plot.caption = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal") 
+
+#
+plot_unidades_por_uso_por_porte +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 20, face = "bold"),
+                 plot.caption = element_markdown(size = 16))
+  )
+```
+
+
+### Média de unidades dos empreendimentos de médio/grande porte por grupo de zoneamento - 2017-2020
+
+```{r}
+# Grandes por zoneamento
+plot_unidades_por_uso_por_porte <-
+  alvaras %>%
+  filter(!is.na(porte)) %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(porte %in% c("Médio porte", "Grande porte")) %>%
+  ggplot(aes(fct_reorder(zoneamento_grupo, n_unidades), n_unidades, 
+             fill = zoneamento_grupo, 
+             group = zoneamento_grupo)) +
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA
+  ) +
+  stat_summary(
+    colour="black", geom="label", fill = "white", alpha = .4, 
+    fun.data = n_fun <- function(x){
+      return(data.frame(y = median(x), 
+                        label = paste0("n = ",length(x))))
+    },
+    size = 5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .6, 
+    ## add some transparency
+    alpha = .2
+  ) +
+  scale_y_continuous(#breaks = seq(0, 50, 10),
+    labels = function(x) paste0(x, " UH's")) +
+  scale_fill_manual(values = c(
+    "ZCs&ZMs" = "#3CBFAE", "EETU" = "#F58220", "EETU Futuros" = "#f6bf38",
+    "ZEIS Aglomerado" = "#E80724", "ZEIS Vazio" = "#F69679", 
+    "Outros" = "#414042")) +  # coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip() +
+  # facet_wrap(~ porte, ncol = 1, scales = "free_x") +
+  labs(title = "Média de unidades dos empreendimentos de médio/grande porte por grupo de zoneamento - 2017-2020",
+       x = "",
+       y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0.5, face = "plain", size = 18),
+        plot.caption = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal") 
+
+#
+plot_unidades_por_uso_por_porte +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 20, face = "bold"),
+                 plot.caption = element_markdown(size = 16))
+  )
+```
+
+
+## Extensão territorial
+
+### Distribuição percentual dos empreendiemntos por porte (unidades) por extensão territorial - 2017-2020
+
+```{r}
+## Porte vs Extensão territorial
+# plot_porte_fx1 <-
+st_drop_geometry(alvaras) %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(!is.na(area_do_terreno)) %>%
+  mutate(porte = as.factor(case_when(n_unidades <= 50 ~ "Pequeno porte",
+                                     n_unidades > 50 ~ "Médio ou grande porte",
+                                     is.na(n_unidades) ~ as.character("Sem informação")))) %>%
+  count(porte, fx_area_terreno) %>%
+  group_by(fx_area_terreno) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(fx_area_terreno, n, fill = porte)) +
+  geom_bar(stat="identity", position = "fill", alpha = .9, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)),
+            position = position_fill(vjust = 0.5),
+            size = 4) +
+  # scale_fill_grey() +
+  scale_fill_manual(values = c("#bcbec0", "#e6e7e8", NA)) +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  # scale_x_continuous(limits = c(2016.5, 2020.5), breaks = seq(2016, 2020, 1)) +
+  labs(#subtitle = "Porte (unidades) vs extensão territorial",
+    x = "",
+    y = "",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo") +
+  theme_pander(base_size = 18, base_family = "lato") +
+  theme(plot.subtitle = element_text(size = 20, hjust = 0.5),
+        legend.title = element_blank(),
+        plot.caption = element_markdown(),
+        legend.position = "bottom",
+        legend.justification = "left")
+```
+
+### Área média do terreno dos empreendimentos por faixas e por tipo do empreendimento - 2017-2020
+
+```{r}
+#
+plot_area_unidades_por_uso <-
+  alvaras %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(!is.na(area_do_terreno)) %>%
+  ggplot(aes(categoria_de_uso_grupo, area_do_terreno, 
+             fill = categoria_de_uso_grupo, 
+             group = categoria_de_uso_grupo)) +
+  geom_boxplot(color = "black") +
+  geom_jitter(width = 0.3, height = 20, alpha = .1) +
+  stat_summary(
+    colour="black", geom="label", fill = "white", 
+    alpha = .4, show.legend = FALSE,
+    fun.data = n_fun <- function(x){
+      return(data.frame(y = median(x), 
+                        label = paste0("n = ",length(x))))
+    },
+    size = 5) +
+  coord_flip() +
+  facet_wrap(~ fct_reorder(fx_area_terreno, area_do_terreno), ncol = 2, scales = "free_x") +
+  labs(title = "",
+       x = "",
+       y = "" 
+       # caption = "*Obs: apenas áreas médias construídas menores que 10000 m²* <br>"
+  ) +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        plot.caption = element_markdown(size = 12),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal")
+
+#
+(plot_area_unidades_por_uso) +
+  plot_annotation(
+    # title = "Área média construída a cada unidade por tipo de empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 20, face = "bold"),
+                 plot.caption = element_markdown(size = 16))
+  )
+
+
+```
+
+### Média de unidades dos empreendimentos de 10000m² a 20000m² por tipo do empreendimento e por zoneamento - 2017-2020
+
+```{r}
+# Grandes por ERM vs ERP
+plot_unidades_por_uso <-
+  alvaras %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(between(area_do_terreno, 10000, 20000)) %>%
+  ggplot(aes(categoria_de_uso_grupo, n_unidades, 
+             fill = categoria_de_uso_grupo, 
+             group = categoria_de_uso_grupo)) +
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA
+  ) +
+  stat_summary(
+    colour="black", geom="label", fill = "white", 
+    alpha = .4, show.legend = FALSE,
+    fun.data = n_fun <- function(x){
+      return(data.frame(y = median(x), 
+                        label = paste0("n = ",length(x))))
+    },
+    size = 5) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    range_scale = .6, 
+    ## add some transparency
+    alpha = .2
+  ) +
+  scale_y_continuous(#breaks = seq(0, 50, 10),
+    labels = function(x) paste0(x, " UH's")) +
+  # coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  coord_flip() +
+  # facet_wrap(~ porte, ncol = 1, scales = "free_x") +
+  labs(x = "",
+       y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0.5, face = "plain", size = 18),
+        plot.caption = element_text(size = 8),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal") 
+
+#
+(plot_unidades_por_uso) +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 20, face = "bold"),
+                 plot.caption = element_markdown(size = 16))
+  )
+```
+
+### Mapa dos empreendimentos de 10000m² a 20000m² por tipo do empreendimento - 2017-2020
+
+```{r}
+#
+geo_sp +
+  geom_sf(data = alvaras %>%
+            filter(between(ano_execucao, 2017, 2020)) %>%
+            filter(between(area_do_terreno, 10000, 20000)),
+          mapping = aes(color = categoria_de_uso_grupo,
+                        size = n_unidades),
+          alpha = .5,
+          show.legend = TRUE) +
+  geom_text_repel(data = geo_sp_subprefeituras,
+                  aes(x = X, y = Y, label = sp_nome),
+                  size = 3,
+                  fontface = "bold") +
+  scale_size_continuous(limits = c(1, 1700)) +
+  labs(color = "",
+       size = "Número de unidades",
+       subtitle = "2017-2020",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo") +
+  theme(plot.subtitle = element_text(hjust = 0.5),
+        plot.caption = element_markdown(size = 12),
+        legend.position = c(0.7, 0.2),
+        legend.title = element_text(size = 12),
+        legend.box = "horizontal") +
+  coord_sf(xlim = st_bbox(geo_sp_cluster)[c(1, 3)],
+           ylim = st_bbox(geo_sp_cluster)[c(2, 4)])
+```
+
+## Cota-parte
+
+### Área média construída a cada unidade por tipo de empreendimento - 2017-2020
+
+```{r plot-8}
+#
+plot_area_unidades_por_uso <-
+  alvaras %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(!is.na(cota_parte)) %>%
+  ggplot(aes(categoria_de_uso_grupo, cota_parte, 
+             fill = categoria_de_uso_grupo, 
+             group = categoria_de_uso_grupo)) +
+  geom_boxplot(color = "black") +
+  geom_jitter(width = 0.3, height = 20, alpha = .1) +
+  stat_summary(fun = mean, colour="black", geom="label", fill = "white", 
+               alpha = .4, show.legend = FALSE,
+               position = position_dodge(0.9), vjust = 0.5, size = 4,
+               aes(label=paste0("μ = ", round(..y.., digits=1)))) +
+  scale_y_continuous(labels = function(x) paste0(x, " m²/UH")) +
+  coord_flip() +
+  facet_wrap(~ fx_cota_parte, ncol = 1, scales = "free_x") +
+  labs(title = "",
+       x = "",
+       y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        plot.caption = element_markdown(size = 12),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal")
+
+#
+(plot_area_unidades_por_uso) +
+  plot_annotation(
+    # title = "Área média construída a cada unidade por tipo de empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 20, face = "bold"),
+                 plot.caption = element_markdown(size = 16))
+  )
+
+
+```
+
+### Área média construída a cada unidade por grupo de zoneamento - 2017-2020
+
+```{r}
+#
+plot_area_unidades_por_uso <-
+  alvaras %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(!is.na(cota_parte)) %>%
+  ggplot(aes(fct_reorder(zoneamento_grupo, desc(cota_parte)), cota_parte, 
+             fill = zoneamento_grupo, 
+             group = zoneamento_grupo)) +
+  geom_boxplot(color = "black") +
+  geom_jitter(width = 0.3, height = 20, alpha = .1) +
+  stat_summary(fun = mean, colour="black", geom="label", fill = "white", 
+               alpha = .4, show.legend = FALSE,
+               position = position_dodge(0.9), vjust = 0.5, size = 4,
+               aes(label=paste0("μ = ", round(..y.., digits=1)))) +
+  scale_y_continuous(labels = function(x) paste0(x, " m²/UH")) +
+  scale_fill_manual(values = c(
+    "ZCs&ZMs" = "#3CBFAE", "EETU" = "#F58220", "EETU Futuros" = "#f6bf38",
+    "ZEIS Aglomerado" = "#E80724", "ZEIS Vazio" = "#F69679", 
+    "Outros" = "#414042")) +
+  coord_flip() +
+  facet_wrap(~ fx_cota_parte, ncol = 1, scales = "free_x") +
+  labs(title = "",
+       x = "",
+       y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        plot.caption = element_markdown(size = 12),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal")
+
+#
+(plot_area_unidades_por_uso) +
+  plot_annotation(
+    # title = "Área média construída a cada unidade por tipo de empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 20, face = "bold"),
+                 plot.caption = element_markdown(size = 16))
+  )
+
+
+```
+
+### Top 30 - Cota-parte dos empreendimentos de cota-parte entre 0 e 100 m²/UH - 2017 a 2020
+
+```{r}
+
+#
+# plot_area_unidades_por_uso <-
+# alvaras_unidades %>%
+alvaras %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(!is.na(cota_parte)) %>%
+  filter(between(cota_parte, 0, 100)) %>%
+  top_n(30, cota_parte) %>%
+  ggplot(aes(fct_reorder(str_wrap(paste0(id, " - ", bairro), 
+                                  width = 35), cota_parte), cota_parte, 
+             fill = zoneamento_grupo)) +
+  geom_col(color = "black") +
+  geom_label(aes(label = round(cota_parte, 1)), fill = "white", hjust = -0.25) +
+  # stat_summary(fun = mean, 
+  #             colour="black", geom="label", fill = "white", alpha = .4,
+  #              position = position_dodge(0.9), vjust = 0.5, size = 4,
+  #              aes(label=round(..y.., digits=1))) +
+  # scale_x_continuous(breaks = seq(2017, 2020, 1)) +
+  scale_y_continuous(labels = function(x) paste0(x, " m²/UH")) +
+  scale_fill_manual(values = c(
+    "ZCs&ZMs" = "#3CBFAE", "EETU" = "#F58220", "EETU Futuros" = "#f6bf38",
+    "ZEIS Aglomerado" = "#E80724", "ZEIS Vazio" = "#F69679", 
+    "Outros" = "#414042")) +
+  coord_flip() +
+  # facet_wrap(~ fx_cota_parte, ncol = 1, scales = "free_x") +
+  labs(title = "",
+       x = "",
+       y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        plot.caption = element_markdown(size = 12),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+```
+
+### Bottom 30 - Cota-parte dos empreendimentos de cota-parte entre 0 e 100 m²/UH - 2017 a 2020
+
+```{r}
+
+#
+# plot_area_unidades_por_uso <-
+# alvaras_unidades %>%
+alvaras %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(!is.na(cota_parte)) %>%
+  filter(between(cota_parte, 0, 100)) %>%
+  top_n(-30, cota_parte) %>%
+  ggplot(aes(fct_reorder(str_wrap(paste0(id, " - ", bairro), 
+                                  width = 35), desc(cota_parte)), cota_parte, 
+             fill = zoneamento_grupo)) +
+  geom_col(color = "black") +
+  geom_label(aes(label = round(cota_parte, 1)), fill = "white", hjust = -0.25) +
+  
+  # stat_summary(fun = mean, 
+  #             colour="black", geom="label", fill = "white", alpha = .4,
+  #              position = position_dodge(0.9), vjust = 0.5, size = 4,
+  #              aes(label=round(..y.., digits=1))) +
+  # scale_x_continuous(breaks = seq(2017, 2020, 1)) +
+  scale_y_continuous(labels = function(x) paste0(x, " m²/UH")) +
+  scale_fill_manual(values = c(
+    "ZCs&ZMs" = "#3CBFAE", "EETU" = "#F58220", "EETU Futuros" = "#f6bf38",
+    "ZEIS Aglomerado" = "#E80724", "ZEIS Vazio" = "#F69679", 
+    "Outros" = "#414042")) +
+  coord_flip() +
+  # facet_wrap(~ fx_cota_parte, ncol = 1, scales = "free_x") +
+  labs(title = "",
+       x = "",
+       y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        plot.caption = element_markdown(size = 12),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+```
+
+# Conclusões
+
+## Focalização
+
+### Empreendimentos de 10000m² a 20000m² por número de unidades - 2017 a 2020
+
+```{r}
+
+#
+# plot_area_unidades_por_uso <-
+# alvaras_unidades %>%
+alvaras %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(between(area_do_terreno, 10000, 20000)) %>%
+  mutate(n_unidades = if_else(is.na(n_unidades), 0, n_unidades)) %>%
+  ggplot(aes(fct_reorder(str_wrap(paste0(id, " - ", bairro), 
+                                  width = 35), n_unidades), n_unidades, 
+             fill = categoria_de_uso_grupo)) +
+  geom_col(color = "black") +
+  stat_summary(fun = mean, 
+               colour="black", geom="label", fill = "white", alpha = .4,
+               show.legend = FALSE,
+               position = position_dodge(0.9), vjust = 0.5, size = 4,
+               aes(label=round(..y.., digits=1))) +
+  # scale_x_continuous(breaks = seq(2017, 2020, 1)) +
+  scale_y_continuous(labels = function(x) paste0(x, "UH's")) +
+  coord_flip() +
+  # facet_wrap(~ fx_cota_parte, ncol = 1, scales = "free_x") +
+  labs(title = "",
+       x = "",
+       y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        plot.caption = element_markdown(size = 12),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+```
+
+### Cota-parte dos empreendimentos de 10000m² a 20000m² - 2017 a 2020
+
+```{r}
+
+#
+# plot_area_unidades_por_uso <-
+# alvaras_unidades %>%
+alvaras %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(between(area_do_terreno, 10000, 20000)) %>%
+  mutate(cota_parte = if_else(is.na(cota_parte), 0, cota_parte)) %>%
+  ggplot(aes(fct_reorder(str_wrap(paste0(id, " - ", bairro), 
+                                  width = 35), cota_parte), cota_parte, 
+             fill = zoneamento_grupo)) +
+  geom_col(color = "black") +
+  stat_summary(fun = mean, 
+               colour="black", geom="label", fill = "white", alpha = .4,
+               position = position_dodge(0.9), vjust = 0.5, size = 4,
+               aes(label=round(..y.., digits=1))) +
+  # scale_x_continuous(breaks = seq(2017, 2020, 1)) +
+  scale_y_continuous(labels = function(x) paste0(x, " m²/UH")) +
+  scale_fill_manual(values = c(
+    "ZCs&ZMs" = "#3CBFAE", "EETU" = "#F58220", "EETU Futuros" = "#f6bf38",
+    "ZEIS Aglomerado" = "#E80724", "ZEIS Vazio" = "#F69679", 
+    "Outros" = "#414042")) +
+  coord_flip() +
+  # facet_wrap(~ fx_cota_parte, ncol = 1, scales = "free_x") +
+  labs(title = "",
+       x = "",
+       y = "") +
+  theme_pander(base_size = 16, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        plot.caption = element_markdown(size = 12),
+        legend.title = element_blank(),
+        legend.position = "bottom",
+        legend.direction = "horizontal")
+
+```
+
+### Tabela síntese dos empreendimentos de 10000m² a 20000m² - 2017 a 2020
+
+```{r}
+alvaras %>%
+  mutate(long = st_coordinates(.)[,1],
+         lat = st_coordinates(.)[,2]) %>%
+  st_drop_geometry() %>%
+  filter(between(ano_execucao, 2017, 2020)) %>%
+  filter(between(area_do_terreno, 10000, 20000)) %>%
+  gt() %>%
+  tab_options(table.font.size = 10,
+              table.width = pct(100),
+              column_labels.font.weight = "bolder") 
+```
+
+```{r}
+# Exportando resultado em formato .xlsx
+# alvaras %>%
+#   mutate(long = st_coordinates(.)[,1],
+#          lat = st_coordinates(.)[,2]) %>%
+#   st_drop_geometry() %>%
+#   filter(between(ano, 2017, 2020)) %>%
+#   filter(between(area_terreno, 10000, 20000)) %>%
+#   openxlsx::write.xlsx(here("outputs", "Alvaras", "alvaras_casos.xlsx"), 
+#                        asTable = FALSE)
+
+```
+

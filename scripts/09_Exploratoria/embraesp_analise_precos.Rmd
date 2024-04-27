@@ -1,0 +1,614 @@
+---
+title: "Análise da evolução dos preços imobliários na cidade de São Paulo"
+author: "Por Adriano Borges Costa e Evandro Luis"
+date: "Em `r format(Sys.time(), '%d de %B de %Y')`"
+---
+
+```{css, echo=FALSE}
+
+.list-group-item.active, .list-group-item.active:hover, .list-group-item.active:focus {
+background-color: #bcbec0;
+border-color: #bcbec0;
+}
+
+.nav>li>a {
+color: #f69679;
+}
+
+body {
+text-align: justify;
+}
+
+#TOC {
+text-align: left;
+background: url("https://www.insper.edu.br/wp-content/uploads/2019/11/logo-insper-arqfuturo-2.png");
+background-size: contain;
+padding-top: 80px !important;
+background-repeat: no-repeat;
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, tidy = TRUE, 
+                      fig.dim=c(16,14), fig.retina = 2)
+
+
+```
+
+```{r}
+#
+options(scipen = 99999)
+
+#
+options(ggplot2.discrete.colour = c("#c4161c", "#009491"),
+        ggplot2.discrete.fill = c("#c4161c", "#009491"))
+```
+
+
+```{r}
+##
+# - Gráfico(s) no plotly
+# - Preços m² ao longo do tempo (linha + pontos)
+# - Preços m² ao longo do tempo por macroárea (linha + pontos) [ou antes e depois]
+# - Preços m² ao longo do tempo por grupos de zoneamento (linha + pontos)
+# - Preços m² ao longo do tempo por agente (linha + pontos)
+# - Preços m² ao longo do tempo cota-parte (linha + pontos)
+# - Preços m² ao longo do tempo por porte (linha + pontos)
+# - Preços m² ao longo do tempo por área de terreno (linha + pontos)
+# - Precos m² por subprefeituras e em distritos selecionados (pelo menos 10 empreendimentos)
+# - Valor adicionado pelas vagas de garagem ao longo do tempo
+# - Preços m² das Estações/Eixos (abs e diferencial) | Eixos com maior queda/aumento de preço do m² - antes e depois do PDE
+# - Valor adicionado por 1 UH
+# - Preços m² por distância ao centro - antes e depois do PDE
+
+
+```
+
+```{r}
+library(here)
+library(sf)
+library(tidyverse)
+library(tidylog)
+library(plotly)
+library(gganimate)
+library(ggthemes)
+library(ggtext)
+library(ggrepel)
+```
+
+```{r, include =FALSE}
+
+#
+embraesp <- sfarrow::st_read_parquet(here("inputs", "2_trusted", "Lancamentos",
+                                          "embraesp_por_empreendimento.parquet")) %>%
+  mutate(zoneamento_grupo = fct_relevel(zoneamento_grupo,
+                                        c("ZCs&ZMs", "EETU", "EETU Futuros",
+                                          "ZEIS-Aglomerado", "ZEIS-Vazio", "Outros")),
+         fx_area_terreno = fct_reorder(fx_area_terreno, area_terreno),
+         fx_cota_parte = fct_reorder(fx_cota_parte, cota_parte))
+
+```
+
+```{r}
+# Expande conjunto de dados pelo total de unidades habitacionais
+embraesp_por_unidade <- as_tibble(lapply(embraesp, rep, 
+                                         embraesp$n_unidades)) 
+```
+
+```{r import-layer, include=FALSE, cache=FALSE}
+## Geografia 
+
+# Os mapas de São Paulo utilizados na análise são oriundos da plataforma GeoSampa e seguem o `CRS SIRGAS 2000`. 
+
+# Sistema de coordenadas Geográficas de referência SIRGAS 
+CRS <- "+proj=utm +zone=23 +south +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+
+# Subprefeituras
+##
+geo_sp_subprefeituras <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "subprefeituras.parquet")) %>%
+  mutate(
+    sp_nome = str_to_title(sp_nome),
+    X = map_dbl(geometry, ~st_centroid(.x)[[1]]),
+    Y = map_dbl(geometry, ~st_centroid(.x)[[2]]))
+
+
+# Bordas da Cidade
+BordasCidade <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "bordas_cidade.parquet"))
+
+# Rede de Ruas
+RedeRuas <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Transporte",
+       "rede_ruas.parquet"))
+
+# Zoom na mancha urbana de São Paulo
+geo_sp_cluster <- geo_sp_subprefeituras %>%
+  st_transform(crs = st_crs(embraesp)) %>%
+  filter(sp_id %in% c(1:25))
+
+```
+
+```{r include=FALSE, cache=FALSE}
+# Mapa simplificado - sem marcação de cores adicionais (área verde e corpos d'agua)
+geo_sp_simple <- 
+  ggplot() +
+  geom_sf(data = geo_sp_subprefeituras, size = 0.25, color = "black", fill = "white") +
+  geom_sf(data = RedeRuas, fill = "black", size = 0.15, alpha = 0.3) +
+  geom_sf(data = BordasCidade, alpha = 0.5, color = "black", fill = NA) +
+  labs(x = "", y ="") +
+  theme_bw(base_family = "lato", base_size = 14) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        plot.caption = element_markdown()) +
+  coord_sf(xlim = st_bbox(geo_sp_cluster)[c(1, 3)],
+           ylim = st_bbox(geo_sp_cluster)[c(2, 4)])
+
+```
+
+# Análise
+
+## Preços de m² em São Paulo
+
+### Mapa - Empreendimentos lançados por agente financiador - 2009-2014 vs 2015-2021 {.tabset .tabset-fade}
+
+#### 2009-2014
+```{r out.width="100%", out.height="100%"}
+### Mapa - Empreendimentos lançados por agente financiador - 2009-2014 vs 2015-2021
+
+#
+geo_sp_simple +
+  geom_sf(data = embraesp %>%
+            filter(ano >= 2009) %>%
+            mutate(periodo = if_else(ano >=2015, "2015-2021", "2009-2014")) %>%
+            filter(periodo == "2009-2014"),
+          aes(fill = agente_ajust,
+              size = n_unidades,
+              alpha = n_unidades),
+          shape = 21, stroke = 1) +
+  # facet_wrap(~ periodo) +
+  scale_size_continuous(limits = c(1, 5200)) +
+  theme_bw() +
+  theme(text = element_text(family = "lato", size = 18),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(x = "", y = "", fill = "Agente financiador",
+       size = "Número de unidades", alpha = "Número de unidades") +
+  coord_sf(xlim = st_bbox(geo_sp_cluster)[c(1, 3)],
+           ylim = st_bbox(geo_sp_cluster)[c(2, 4)])
+
+# g <-
+#  ggplot(data = embraesp %>%
+#               st_filter(BordasCidade) %>%
+#             filter(ano >= 2009) %>%
+#             mutate(periodo = fct_rev(if_else(ano >=2015, "2015-2021", "2009-2014")))) + 
+#   geom_sf(data = geo_sp_subprefeituras) + 
+#   geom_sf(aes(fill = agente_ajust,
+#               size = n_unidades,
+#               alpha = n_unidades),
+#           shape = 21,
+#           stroke = 1) +
+#   # geom_text_repel(data = geo_sp_subprefeituras,
+#   #                 aes(x = X, y = Y, label = sp_nome),
+#   #                 size = 3,
+#   #                 fontface = "bold") +
+#   # facet_wrap(~agente_ajust, ncol = 2) +
+#   scale_fill_manual(values = c("#c4161c", "#009491"), na.value = "white") +
+#   theme_bw() + 
+#   theme(axis.text = element_blank(), 
+#         axis.ticks = element_blank(),
+#         # legend.position = "bottom",
+#         legend.position = c(0.7, 0.2),
+#         legend.box = "horizontal",
+#         ) +
+#    coord_sf(xlim = st_bbox(geo_sp_cluster)[c(1, 3)],
+#            ylim = st_bbox(geo_sp_cluster)[c(2, 4)]) +
+#    labs(X = "", Y = "", color = "Agente financiador",
+#                           size = "Número de unidades", alpha = "Número de unidades",
+#                           title = "Período: {closest_state}") +
+#    transition_states(states = periodo) +
+#    enter_fade() + 
+#   exit_shrink() +
+#   ease_aes('sine-in-out')
+
+#
+# anim_save("g.gif", g)
+
+
+# ![](g.gif)
+
+```
+
+#### 2015-2021
+
+```{r out.width="100%", out.height="100%"}
+#
+#
+geo_sp_simple +
+  geom_sf(data = embraesp %>%
+            filter(ano >= 2009) %>%
+            mutate(periodo = if_else(ano >=2015, "2015-2021", "2009-2014")) %>%
+            filter(periodo == "2015-2021"),
+          aes(fill = agente_ajust,
+              size = n_unidades,
+              alpha = n_unidades),
+          shape = 21, stroke = 1) +
+  # facet_wrap(~ periodo) +
+  scale_size_continuous(limits = c(1, 5200)) +
+  theme_bw() +
+  theme(text = element_text(family = "lato", size = 18),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(x = "", y = "", fill = "Agente financiador",
+       size = "Número de unidades", alpha = "Número de unidades") +
+  coord_sf(xlim = st_bbox(geo_sp_cluster)[c(1, 3)],
+           ylim = st_bbox(geo_sp_cluster)[c(2, 4)])
+
+```
+
+### Número de empreendimentos - 2009-2021
+
+```{r}
+ggplot(data = embraesp_por_unidade %>% 
+         filter(ano >= 2009) %>%
+         group_by(ano) %>% 
+         summarize(n_empreendimentos = n_distinct(id_empreendimento),
+                   n_unidades = n(),
+                   preco_m2 = mean(preco_m2))) +
+  geom_col(aes(ano, n_empreendimentos)) +
+  geom_label(aes(ano, n_empreendimentos,
+                 label = n_empreendimentos),
+             vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  theme_minimal(base_size = 20) +
+  labs(x = "", y = "")
+
+```
+
+### Número de unidades - 2009-2021
+
+```{r}
+ggplot(data = embraesp_por_unidade %>% 
+         filter(ano >= 2009) %>%
+         group_by(ano) %>% 
+         summarize(n_empreendimentos = n_distinct(id_empreendimento),
+                   n_unidades = n(),
+                   preco_m2 = mean(preco_m2))) +
+  geom_col(aes(ano, n_unidades)) +
+  geom_label(aes(ano, n_unidades,
+                 label = n_unidades),
+             vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  theme_minimal(base_size = 20) +
+  labs(x = "", y = "")
+
+
+```
+
+### Preço do m² nominal vs deflacionado (dez/2021) - 2009-2021
+
+
+```{r, out.width="100%", out.height="100%"}
+gg <-
+  ggplot(data = embraesp_por_unidade %>%
+           filter(ano >= 2009) %>%
+           group_by(ano) %>% 
+           summarize(n_empreendimentos = n_distinct(id_empreendimento),
+                     n_unidades = n(),
+                     preco_m2 = mean(preco_m2),
+                     preco_m2_deflacionado = mean(preco_m2_deflacionado))) +
+  geom_point(aes(ano, preco_m2, size = n_empreendimentos),
+             color = "grey", alpha =.5) +
+  geom_line(aes(ano, preco_m2),
+            color = "grey", alpha =.5) +
+  geom_point(aes(ano, preco_m2_deflacionado, size = n_empreendimentos)) +
+  geom_line(aes(ano, preco_m2_deflacionado),
+            color = "blue") +
+  geom_label(aes(ano, preco_m2_deflacionado,
+                 label = scales::label_dollar(prefix = "R$",
+                                              big.mark = ".", decimal.mark = ",")
+                 (round(preco_m2_deflacionado, 2))),
+             vjust = -.5, size = 3) +
+  scale_y_continuous(labels = scales::label_dollar(prefix = "R$",
+                                                   big.mark = ".", decimal.mark = ",")) +
+  scale_x_continuous(limits = c(2009, 2021),
+                     breaks = seq(2009, 2021, 1)) +
+  labs(x = "", y = "", caption = "Ano-base = 2021") +
+  theme_minimal() 
+
+#
+plotly::ggplotly(gg)
+
+```
+
+
+```{r}
+plot_serie_preco_m2 <- function(df, t0, var) {
+  df <- df %>% 
+    filter(ano >= t0) %>%
+    group_by(ano, !!enquo(var)) %>% 
+    summarize(n_empreendimentos = n_distinct(id_empreendimento),
+              n_unidades = n(),
+              preco_m2 = mean(preco_m2),
+              preco_m2_deflacionado = mean(preco_m2_deflacionado)) %>%
+    ungroup()
+  
+  return(ggplot(data = df) +
+           geom_point(aes(ano, preco_m2_deflacionado, color = {{var}}, 
+                          size = n_empreendimentos)) +
+           geom_line(aes(ano, preco_m2_deflacionado, color = {{var}}, group = {{var}})) +
+           geom_label(aes(ano, preco_m2_deflacionado,
+                          label = scales::label_dollar(prefix = "R$",
+                                                       big.mark = ".", decimal.mark = ",")
+                          (round(preco_m2_deflacionado, 2)),
+                          group = {{var}}),
+                      vjust = -.5, size = 3) +
+           scale_y_continuous(labels = scales::label_dollar(prefix = "R$", 
+                                                            big.mark = ".", decimal.mark = ",")) +
+           scale_x_continuous(limits = c(t0, 2021),
+                              breaks = seq(t0, 2021, 1))
+  )
+}
+
+```
+
+### Preço do m² por grupo de zoneamento - 2009-2021
+
+```{r, out.width="100%", out.height="100%"}
+plotly::ggplotly(
+  plot_serie_preco_m2(df = embraesp_por_unidade, t0 = 2009, var = zoneamento_grupo) +
+  scale_color_manual(values = c("ZCs&ZMs" = "#3CBFAE", "EETU" = "#F58220", "EETU Futuros" = "#f6bf38",
+                               "ZEIS Aglomerado" = "#E80724", "ZEIS Vazio" = "#F69679", 
+                               "Outros" = "#414042")) +
+    theme_light() +
+    labs(x = "", y = "", size = "", color = "Zoneamento", caption = "Ano-base = 2021")
+)
+
+```
+
+### Preço do m² por Macroárea - 2009-2021
+
+```{r, out.width="100%", out.height="100%"}
+plotly::ggplotly(
+  plot_serie_preco_m2(df = embraesp_por_unidade, t0 = 2009, var = macroarea) +
+    scale_colour_viridis_d() +
+    theme_light() +
+    labs(x = "", y = "", size = "", color = "Macroarea", caption = "Ano-base = 2021")
+)
+
+```
+
+### Preço do m² por agente financiador - 2009-2021
+
+```{r, out.width="100%", out.height="100%"}
+plotly::ggplotly(
+  plot_serie_preco_m2(df = embraesp_por_unidade, t0 = 2009, var = agente_ajust) +
+    theme_light() +
+    labs(x = "", y = "", size = "", color = "Agente financiador", caption = "Ano-base = 2021")
+)
+
+```
+
+### Preço do m² por faixas de área de terreno - 2009-2021
+
+```{r, out.width="100%", out.height="100%"}
+plotly::ggplotly(
+  plot_serie_preco_m2(df = embraesp_por_unidade, t0 = 2009, var = fx_area_terreno) +
+    scale_colour_manual(values = scales::seq_gradient_pal("#c0c0c0", "#2b2b2b")(seq(0,1,length.out=4))) +
+    theme_light() +
+    labs(x = "", y = "", size = "", color = "Área do terreno", caption = "Ano-base = 2021")
+)
+
+```
+
+### Preço do m² por faixas de número de unidades - 2009-2021
+
+```{r, out.width="100%", out.height="100%"}
+plotly::ggplotly(
+  plot_serie_preco_m2(df = embraesp_por_unidade, t0 = 2009, var = porte) +
+    scale_colour_manual(values = scales::seq_gradient_pal("#c0c0c0", "#2b2b2b")(seq(0,1,length.out=3))) +
+    theme_light() +
+    labs(x = "", y = "", size = "", color = "Número de unidades", caption = "Ano-base = 2021")
+)
+
+```
+
+### Preço do m² por faixas de cota-parte - 2009-2021
+
+```{r, out.width="100%", out.height="100%"}
+plotly::ggplotly(
+  plot_serie_preco_m2(df = embraesp_por_unidade, t0 = 2009, var = fx_cota_parte) +
+    scale_colour_manual(values = scales::seq_gradient_pal("#c0c0c0", "#2b2b2b")(seq(0,1,length.out=4))) +
+    theme_light() +
+    labs(x = "", y = "", size = "", color = "Cota-parte", caption = "Ano-base = 2021")
+)
+
+```
+
+## Preços de m² em Eixos de Estruturação da Transformação Urbana - EETU's
+
+
+### Número de empreendimentos - 2009-2021
+
+```{r}
+ggplot(data = embraesp_por_unidade %>% 
+         filter(ano >= 2009) %>%
+         filter(zoneamento_grupo == "EETU") %>%
+         group_by(ano) %>% 
+         summarize(n_empreendimentos = n_distinct(id_empreendimento),
+                   n_unidades = n(),
+                   preco_m2 = mean(preco_m2))) +
+  geom_col(aes(ano, n_empreendimentos), fill = "#F58220", color = "black") +
+  geom_label(aes(ano, n_empreendimentos,
+                 label = n_empreendimentos),
+             vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  theme_minimal(base_size = 20) +
+  labs(x = "", y = "")
+
+```
+
+### Número de unidades - 2009-2021
+
+```{r}
+ggplot(data = embraesp_por_unidade %>% 
+         filter(ano >= 2009) %>%
+         filter(zoneamento_grupo == "EETU") %>%
+         group_by(ano) %>% 
+         summarize(n_empreendimentos = n_distinct(id_empreendimento),
+                   n_unidades = n(),
+                   preco_m2 = mean(preco_m2))) +
+  geom_col(aes(ano, n_unidades), fill = "#F58220", color = "black") +
+  geom_label(aes(ano, n_unidades,
+                 label = n_unidades),
+             vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2009, 2021, 1)) +
+  theme_minimal(base_size = 20) +
+  labs(x = "", y = "")
+
+```
+
+### Preço do m² EETU por Tipo de Transporte que ativa o EETU - 2009-2021
+
+```{r, out.width="100%", out.height="100%"}
+plotly::ggplotly(
+  plot_serie_preco_m2(df = embraesp_por_unidade, t0 = 2009, var = tipo_transp) +
+    # scale_colour_manual(values = scales::seq_gradient_pal("#c0c0c0", "#2b2b2b")(seq(0,1,length.out=4))) +
+    scale_color_manual(values = c("#faa61a", "#a62b4d", "#f15a22")) +
+    theme_light() +
+    labs(x = "", y = "", size = "", color = "Tipo de Transporte", caption = "Ano-base = 2021")
+)
+
+```
+
+### Top 30 - Preço do m² EETU por infraestrutura de transporte que ativa o EETU - 2009-2021
+
+```{r, out.width="100%", out.height="100%"}
+#
+gg<- embraesp_por_unidade %>%
+  filter(ano >= 2009) %>%
+  filter(!is.na(eixo)) %>%
+  group_by(tipo_transp, eixo) %>%
+  summarize(preco_m2_deflacionado = mean(preco_m2_deflacionado)) %>%
+  top_n(30, preco_m2_deflacionado) %>%
+  ggplot() +
+  geom_col(aes(fct_reorder(str_wrap(eixo, width = 60), preco_m2_deflacionado),
+               preco_m2_deflacionado, fill = tipo_transp, label = eixo), color = "black") +
+  scale_y_continuous(#breaks = seq(0, 23000, 4000), 
+                     limits = c(0, 48000),
+                     expand = c(0,0), labels =scales::label_dollar(prefix = "R$ ", 
+                                                                   # suffix = " K",
+                                                                   # scale = 1e-3,
+                                                                   big.mark = ".", decimal.mark = ",",
+                     )) +
+  scale_fill_manual(values = c("#faa61a", "#a62b4d", "#f15a22")) +
+  coord_flip() +
+  labs(x = "",
+       y = "", fill = "Tipo de transporte") +
+  theme(text = element_text(family = "lato", size = 10),
+        axis.text.y = element_text(hjust = 1, color = "black"),
+        axis.ticks.y = element_blank(),
+        legend.title = element_blank(),
+        legend.background = element_blank(), 
+        legend.position = c(0.75, 0.5))
+
+#
+plotly::ggplotly(tooltip = c("eixo",
+                             "preco_m2_deflacionado"))
+
+```
+
+### Bottom 30 - Preço do m² EETU por infraestrutura de transporte que ativa o EETU - 2009-2021
+
+```{r, out.width="100%", out.height="100%"}
+#
+gg<- embraesp_por_unidade %>%
+  filter(ano >= 2009) %>%
+  filter(!is.na(eixo)) %>%
+  group_by(tipo_transp, eixo) %>%
+  summarize(preco_m2_deflacionado = mean(preco_m2_deflacionado)) %>%
+  # ungroup() %>%
+  top_n(-30, preco_m2_deflacionado) %>%
+  ggplot() +
+  geom_col(aes(fct_reorder(str_wrap(eixo, width = 60),
+                           desc(preco_m2_deflacionado)),
+               preco_m2_deflacionado, fill = tipo_transp, label = eixo), color = "black") +
+  # scale_y_continuous(breaks = seq(0, 23000, 4000), limits = c(0, 21000),
+  #                    expand = c(0,0), labels =scales::label_dollar(prefix = "R$ ", 
+  #                                                                  # suffix = " K",
+  #                                                                  # scale = 1e-3,
+  #                                                  big.mark = ".", decimal.mark = ",",
+  #                                                  )) +
+  scale_fill_manual(values = c("#faa61a", "#a62b4d", "#f15a22")) +
+  coord_flip() +
+  labs(x = "",
+       y = "", fill = "Tipo de transporte") +
+  theme(text = element_text(family = "lato", size = 10),
+        axis.text.y = element_text(hjust = 1, color = "black"),
+        axis.ticks.y = element_blank(),
+        legend.title = element_blank(),
+        legend.background = element_blank(), 
+        legend.position = c(0.75, 0.5))
+
+#
+plotly::ggplotly(tooltip = c("eixo",
+                             "preco_m2_deflacionado"))
+
+```
+
+### Diferencial de preço do m² em Eixos - 2009-2014 vs 2015-2021
+```{r, out.width="100%", out.height="100%"}
+### Diferencial de unidades licenciadas em Eixos em função da distância ao centro (2009-2014 vs 2015-2020)
+
+gg<- embraesp_por_unidade %>%
+  filter(ano >= 2009) %>%
+  mutate(periodo = if_else(ano >= 2015, "2015-2021", "2009-2014")) %>%
+  complete(periodo, eixo) %>%
+  group_by(eixo) %>%
+  mutate(TipoTransp = first(na.omit(tipo_transp))) %>%
+  filter(!is.na(periodo)) %>%
+  group_by(periodo, tipo_transp, eixo) %>%
+  summarize(preco_m2_deflacionado = mean(preco_m2_deflacionado, na.rm = TRUE),
+            n_empreendimentos = n_distinct(id_empreendimento)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = "periodo",
+              values_from = c("n_empreendimentos", "preco_m2_deflacionado")) %>%
+  mutate(#across(where(is.numeric), ~ replace_na(.x, 0)),
+    diff_preco = `preco_m2_deflacionado_2015-2021` - `preco_m2_deflacionado_2009-2014`) %>%
+  filter(!is.na(eixo) & !is.na(diff_preco)) %>%
+  ggplot() +
+  geom_col(aes(fct_reorder(str_wrap(eixo, width = 60),
+                           desc(diff_preco)),
+               diff_preco, fill = tipo_transp, label = eixo), color = "black") +
+  scale_y_continuous(#breaks = seq(-10000, 10000, 5000), 
+                     limits = c(-26000, 26000),
+                     expand = c(0,0), labels =scales::label_dollar(prefix = "R$ ",
+                                                                   # suffix = " K",
+                                                                   # scale = 1e-3,
+                                                                   big.mark = ".", decimal.mark = ",",
+                     )) +
+  scale_fill_manual(values = c("#faa61a", "#a62b4d", "#f15a22")) +
+  coord_flip() +
+  labs(x = "",
+       y = "", fill = "Tipo de transporte") +
+  theme(text = element_text(family = "lato", size = 10),
+        axis.text.y = element_text(hjust = 1, color = "black"),
+        axis.ticks.y = element_blank(),
+        legend.title = element_blank(),
+        legend.background = element_blank(), 
+        legend.position = c(0.75, 0.5))
+
+#
+plotly::ggplotly(tooltip = c("eixo",
+                             "diff_preco"))
+```
+
+
+
+# Conclusões
+
+

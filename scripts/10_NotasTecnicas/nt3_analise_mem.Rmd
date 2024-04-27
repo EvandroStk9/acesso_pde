@@ -1,0 +1,2197 @@
+---
+title: "Nota técnica - dinâmica imobiliária na MEM pós-PDE"
+author: "Por Evandro Luis e Joyce Reis"
+date: "Em `r format(Sys.time(), '%d de %B de %Y')`"
+---
+
+```{css, echo=FALSE}
+
+.list-group-item.active, .list-group-item.active:hover, .list-group-item.active:focus {
+background-color: #bcbec0;
+border-color: #bcbec0;
+}
+
+.nav>li>a {
+color: #f69679;
+}
+
+body {
+text-align: justify;
+}
+
+#TOC {
+text-align: left;
+background: url("https://www.insper.edu.br/wp-content/uploads/2019/11/logo-insper-arqfuturo-2.png");
+background-size: contain;
+padding-top: 80px !important;
+background-repeat: no-repeat;
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, tidy = TRUE, 
+                      fig.dim=c(16,12), out.width = "100%",  fig.retina = 2)
+
+```
+
+```{r}
+#
+options(scipen = 9999)
+
+# Definindo novo default de cores adequado à paleta de cores do Insper
+options(ggplot2.discrete.colour = c("#c4161c", "#009491"),
+        ggplot2.discrete.fill = c("#c4161c", "#009491"))
+
+
+```
+
+```{r}
+library(here)
+library(fs)
+library(tidyverse)
+library(sfarrow)
+library(sf)
+library(gt)
+library(scales)
+library(ggrepel)
+library(ggtext)
+library(patchwork)
+library(ggthemes)
+
+```
+
+```{r, include=FALSE}
+# Sistema de coordenadas Geográficas de referência SIRGAS 
+CRS <- "+proj=utm +zone=23 +south +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+
+
+
+# Setores da MEM
+mem_por_setor <- 
+  # st_read(here("inputs", 
+  #                                  "Complementares","Macroareas",
+  #                                  "MEMSetores",
+  #                                  "sirgas_PDE_2A-Setores-MEM.shp"),
+  #                             crs = CRS) %>%
+  sfarrow::st_read_parquet(here("inputs", "2_trusted",
+                                "Legislacao",
+                                "mem_por_setor.parquet")) %>%
+  transmute(
+    mem_setor,
+    mem_setor_grupo,
+    area_edificavel = unclass(st_area(.))
+  ) %>%
+  group_by(mem_setor) %>%
+  summarize(
+    mem_setor_grupo = first(mem_setor_grupo),
+    area_edificavel = sum(area_edificavel)) %>%
+  st_make_valid() %>%
+  # st_transform(crs = 4674) %>%
+  mutate(X = map_dbl(geometry, ~st_centroid(.x)[[1]]),
+         Y = map_dbl(geometry, ~st_centroid(.x)[[2]]))
+
+#
+alvaras_por_lote <- 
+  sfarrow::st_read_parquet(here("inputs", "2_trusted",
+                                "Licenciamentos",
+                                "alvaras_por_lote.parquet")) %>%
+  # left_join(st_drop_geometry(geo_sp_macroarea), by = "macroarea") %>%
+  left_join(st_drop_geometry(mem_por_setor), by = c("mem_setor", "mem_setor_grupo")) %>%
+  filter(ano_execucao >=2013) %>%
+  mutate(
+    periodo = case_when(
+      between(ano_execucao, 2013, 2015) ~ "2013-2015",
+      between(ano_execucao, 2016, 2018) & legislacao == "PDE2002eLPUOS2004" ~ "2016-2018 (Pré-PDE)",
+      between(ano_execucao, 2016, 2018) & legislacao == "PDE2014eLPUOS2016" ~ "2016-2018 (Pós-PDE)",
+      between(ano_execucao, 2019, 2021) ~ "2019-2021",
+      TRUE ~ NA_character_) %>%
+      factor(levels = c("2013-2015", "2016-2018 (Pré-PDE)", 
+                        "2016-2018 (Pós-PDE)", "2019-2021")),
+    legislacao = factor(legislacao, levels =  c("PDE2002eLPUOS2004", "PDE2014eLPUOS2004", "PDE2014eLPUOS2016")),
+    porte = case_when(
+      n_unidades < 50 ~ "Pequeno porte",
+      between(n_unidades, 50, 199) ~ "Médio porte",
+      n_unidades >= 200 ~ "Grande porte",
+      TRUE ~ NA_character_),
+    mem_setor_grupo_id = case_when(mem_setor_grupo == "CENTRO" ~ 2,
+                                   mem_setor_grupo == "EIXO" ~ 1,
+                                   mem_setor_grupo == "ORLA" ~ 3),
+    mem_setor = fct_reorder(mem_setor, as.numeric(mem_setor_grupo)),
+    zoneamento_grupo = case_when(
+      zoneamento %in% c("ZDE-1", "ZDE-2", "ZPI") ~ "ZDE&ZPI",
+      TRUE ~ as.character(zoneamento_grupo)
+    ),
+    fx_area_terreno = fct_reorder(
+      case_when(between(area_do_terreno, 0, 4999.999) ~ "0 a 5000 m²",
+                between(area_do_terreno, 5000, 9999.999) ~ "5000 a 10000 m²",
+                between(area_do_terreno, 10000,  19999.999) ~ "10000 a 20000m²",
+                # between(area_do_terreno, 20000, 39999.999) ~ "20000 a 40000m²",
+                area_do_terreno >= 20000 ~ "Mais que 20000 m2",
+                TRUE ~ "Sem informação"), 
+      replace_na(area_do_terreno, 0))
+  ) 
+
+#
+alvaras_por_unidade <- alvaras_por_lote %>%
+  # st_drop_geometry() %>%
+  filter(!is.na(n_unidades)) %>%
+  uncount(n_unidades, .remove = FALSE)
+
+#
+# mem_eixos_por_quadra <- sfarrow::st_read_parquet(here("outputs", "MEM",
+#                                                       "mem_eixos_por_quadra.parquet")) %>%
+#   st_transform(4674)
+
+#
+zonas_eetu <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Eixos",
+       "zonas_eetu.parquet")) %>%
+  select(-isocrona, -distancia_cbd) %>%
+  mutate(
+    across(
+      c(eixo, tipo_infra, #tipo_transp
+        ),
+      str_to_title
+    )
+  )
+#
+zonas_eetu_potencial <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Eixos",
+       "zonas_eetu_potencial_mem.parquet")) %>%
+  bind_rows(zonas_eetu)
+
+
+```
+
+
+
+```{r}
+# Indicadores: antes e depois por macroárea
+shifts_alvaras_macroarea <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  # Reordena dataframe
+  filter(!is.na(macroarea)) %>%
+  mutate(#macroarea = if_else(macroarea == "MEM", "MEM", "Fora da MEM"),
+    macroarea = fct_other(macroarea, keep = c("MEM", "MUC", "MQU", "MRVU"),
+                          other_level = "Outra"),
+    # periodo = case_when(between(ano_execucao, 2013, 2015) ~ "t0",
+    #                     between(ano_execucao, 2019, 2021) ~ "t1",
+    #                     TRUE ~ NA_character_)
+    periodo = case_when(legislacao == "PDE2014eLPUOS2016" ~ "t1",
+                        legislacao == "PDE2002eLPUOS2004" ~ "t0",
+                        TRUE ~ NA_character_)) %>%
+  filter(!is.na(periodo)) %>%
+  # Adiciona valores por macroarea
+  group_by(periodo, macroarea) %>%
+  summarize(n_empreendimentos = n(),
+            n_unidades = sum(n_unidades, na.rm = TRUE),
+            area_do_terreno = sum(area_do_terreno, na.rm = TRUE),
+            area_da_construcao = sum(area_da_construcao, na.rm = TRUE)) %>%
+  ungroup() %>%
+  pivot_longer(cols = -c(periodo, macroarea)) %>%
+  full_join(
+    # Adiciona valores totais SP como macroarea SP
+    st_drop_geometry(alvaras_por_lote) %>%
+      filter(!is.na(macroarea)) %>%
+      mutate(#macroarea = if_else(macroarea == "MEM", "MEM", "Fora da MEM"),
+        macroarea = fct_other(macroarea, keep = c("MEM", "MUC", "MQU", "MRVU"),
+                              other_level = "Outra"),
+        periodo = case_when(legislacao == "PDE2014eLPUOS2016" ~ "t1",
+                            legislacao == "PDE2002eLPUOS2004" ~ "t0",
+                            TRUE ~ NA_character_)) %>%
+      filter(!is.na(periodo)) %>%
+      group_by(periodo) %>%
+      summarize(macroarea = "SP",
+                n_empreendimentos = n(),
+                n_unidades = sum(n_unidades, na.rm = TRUE),
+                area_do_terreno = sum(area_do_terreno, na.rm = TRUE),
+                area_da_construcao = sum(area_da_construcao, na.rm = TRUE)) %>%
+      ungroup() %>%
+      pivot_longer(cols = -c(periodo, macroarea)) 
+  ) %>%
+  full_join(
+    # Adiciona valores totais Macroáreas Urbanas como macroarea "MEM, MUC, MQU ou MRVU"
+    st_drop_geometry(alvaras_por_lote) %>%
+      filter(!is.na(macroarea)) %>%
+      mutate(#macroarea = if_else(macroarea == "MEM", "MEM", "Fora da MEM"),
+        macroarea = fct_other(macroarea, keep = c("MEM", "MUC", "MQU", "MRVU"),
+                              other_level = "Outra"),
+        periodo = case_when(legislacao == "PDE2014eLPUOS2016" ~ "t1",
+                            legislacao == "PDE2002eLPUOS2004" ~ "t0",
+                            TRUE ~ NA_character_)) %>%
+      filter(!is.na(periodo) & macroarea != "Outra") %>%
+      mutate(macroarea = "MEM, MUC, MQU ou MRVU") %>%
+      group_by(periodo, macroarea) %>%
+      summarize(n_empreendimentos = n(),
+                n_unidades = sum(n_unidades, na.rm = TRUE),
+                area_do_terreno = sum(area_do_terreno, na.rm = TRUE),
+                area_da_construcao = sum(area_da_construcao, na.rm = TRUE)) %>%
+      ungroup() %>%
+      pivot_longer(cols = -c(periodo, macroarea)) 
+  ) %>%
+  # Calcula taxas de variação 
+  group_by(macroarea, name) %>%
+  arrange(macroarea, name) %>%
+  mutate(rate = (value/lag(value))-1) %>%
+  arrange(name, periodo) %>%
+  pivot_wider(values_from = c(value, rate), names_from = periodo) %>%
+  group_by(name) %>%
+  transmute(macroarea, 
+            name,
+            "PDE2002 e LPUOS 2004" = value_t0, "PDE 2014 e LPUOS 2016" = value_t1,
+            variacao = rate_t1,
+            variacao_sp = rate_t1[which(macroarea=="SP")],
+            diferencial = rate_t1-rate_t1[which(macroarea=="SP")])
+
+
+# Indicadores: antes e depois por setor da MEM
+shifts_alvaras_mem_setor <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  # Reordena dataframe
+  filter(macroarea == "MEM") %>%
+  filter(!is.na(mem_setor)) %>%
+  mutate(periodo = case_when(legislacao == "PDE2014eLPUOS2016" ~ "t1",
+                             legislacao == "PDE2002eLPUOS2004" ~ "t0",
+                             TRUE ~ NA_character_)) %>%
+  filter(!is.na(periodo)) %>%
+  # Adiciona valores por setor da MEM
+  group_by(periodo, mem_setor) %>%
+  summarize(n_empreendimentos = n(),
+            n_unidades = sum(n_unidades, na.rm = TRUE),
+            area_do_terreno = sum(area_do_terreno, na.rm = TRUE),
+            area_da_construcao = sum(area_da_construcao, na.rm = TRUE)) %>%
+  ungroup() %>%
+  pivot_longer(cols = -c(periodo, mem_setor)) %>%
+  full_join(
+    # Adiciona valores totais MEM como setor MEM
+    st_drop_geometry(alvaras_por_lote) %>%
+      filter(macroarea == "MEM") %>%
+      filter(!is.na(mem_setor)) %>%
+      mutate(periodo = case_when(legislacao == "PDE2014eLPUOS2016" ~ "t1",
+                                 legislacao == "PDE2002eLPUOS2004" ~ "t0",
+                                 TRUE ~ NA_character_)) %>%
+      filter(!is.na(periodo)) %>%
+      group_by(periodo) %>%
+      summarize(mem_setor = "MEM",
+                n_empreendimentos = n(),
+                n_unidades = sum(n_unidades, na.rm = TRUE),
+                area_do_terreno = sum(area_do_terreno, na.rm = TRUE),
+                area_da_construcao = sum(area_da_construcao, na.rm = TRUE)) %>%
+      ungroup() %>%
+      pivot_longer(cols = -c(periodo, mem_setor))) %>%
+  # Calcula taxas de variação 
+  group_by(mem_setor, name) %>%
+  arrange(mem_setor, name) %>%
+  mutate(rate = (value/lag(value))-1) %>%
+  arrange(name, periodo) %>%
+  pivot_wider(values_from = c(value, rate), names_from = periodo) %>%
+  group_by(name) %>%
+  transmute(mem_setor, 
+            name,
+            "PDE2002 e LPUOS 2004" = value_t0, "PDE 2014 e LPUOS 2016" = value_t1,
+            variacao = rate_t1,
+            variacao_sp = rate_t1[which(mem_setor=="MEM")],
+            diferencial = rate_t1-rate_t1[which(mem_setor=="MEM")])
+
+
+```
+
+
+```{r, include=FALSE}
+
+# #
+# mem_por_setor <- sfarrow::st_read_parquet(here("inputs", "4_refined", "MEMSetores",
+#                                "mem_setores.parquet")) %>%
+#   group_by(mem_setor) %>%
+#   summarize(area_edificavel_mem_setor = first(area_edificavel))
+
+# Sistema de coordenadas Geográficas de referência SIRGAS 
+CRS <- "+proj=utm +zone=23 +south +ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+
+
+# Subprefeituras
+subprefeituras <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "subprefeituras.parquet")) %>%
+  mutate(
+    sp_nome = str_to_title(sp_nome),
+    X = map_dbl(geometry, ~st_centroid(.x)[[1]]),
+    Y = map_dbl(geometry, ~st_centroid(.x)[[2]]))
+
+# Macroareas
+mem <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Legislacao",
+       "mem.parquet")
+) %>%
+  st_transform(crs = st_crs(subprefeituras))
+
+# Distritos
+distritos <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "distritos.parquet")) %>%
+  transmute(distrito = ds_nome,
+            area = unclass(st_area(.))/1000000)
+
+# Bordas da Cidade
+bordas_cidade <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "bordas_cidade.parquet"))
+
+# Áreas Verdes
+areas_verdes <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "areas_verdes.parquet"))
+
+# Corpos D'água
+corpos_dagua <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "corpos_dagua.parquet"))
+# Rios
+rios_principais <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "ElementosContexto",
+       "rios_principais.parquet")) %>%
+  st_difference(corpos_dagua)
+
+# Rede de Ruas
+rede_ruas <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Transporte",
+       "rede_ruas.parquet"))
+
+# Linha Metro
+linha_metro <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Transporte",
+       "linha_metro.parquet"))
+
+# Linha Trem
+linha_trem <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Transporte",
+       "linha_trem.parquet"))
+
+# Linha Ônibus
+corredor_onibus <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Transporte",
+       "corredor_onibus.parquet"))
+
+
+##
+acessibilidade_empregos_por_grade <- sfarrow::st_read_parquet(
+  here("inputs", "2_trusted", "Acessibilidade",
+       "acessibilidade_empregos_por_grade.parquet")
+) %>%
+  st_transform(crs = st_crs(subprefeituras))
+
+
+# Zoom na mancha urbana de São Paulo
+bbox_sp <- st_bbox(c(xmin = -46.805, xmax = -46.38,
+                     ymin = -23.70, ymax = -23.395))
+
+```
+
+
+```{r include=FALSE}
+# Criando mapa base de São Paulo
+geo_sp <- 
+  ggplot() +
+  geom_sf(data = subprefeituras, size = 0.25, color = "black", fill = "white") +
+  geom_sf(data = areas_verdes, fill = "#00800C", alpha = 0.7, color = NA) +
+  geom_sf(data = corpos_dagua, fill = "#191970", alpha = 0.7, color = NA) +
+  geom_sf(data = rios_principais, color = "#191970") +
+  geom_sf(data = rede_ruas, fill = "black", size = 0.15, alpha = 0.3) +
+  geom_sf(data = bordas_cidade, alpha = 0.5, color = "black", fill = NA) +
+  labs(x = "", y ="") +
+  theme_bw(base_family = "lato", base_size = 14) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        plot.caption = element_markdown()) +
+  coord_sf(xlim = st_bbox(bbox_sp)[c(1, 3)],
+           ylim = st_bbox(bbox_sp)[c(2, 4)])
+
+# Mapa simplificado - sem marcação de cores adicionais (área verde e corpos d'agua)
+geo_sp_simple <- 
+  ggplot() +
+  geom_sf(data = subprefeituras, size = 0.25, color = "black", fill = "white") +
+  geom_sf(data = rede_ruas, fill = "black", size = 0.15, alpha = 0.3) +
+  geom_sf(data = bordas_cidade, alpha = 0.5, color = "black", fill = NA) +
+  labs(x = "", y ="") +
+  theme_bw(base_family = "lato", base_size = 14) +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        plot.caption = element_markdown()) +
+  coord_sf(xlim = st_bbox(bbox_sp)[c(1, 3)],
+           ylim = st_bbox(bbox_sp)[c(2, 4)])
+
+#
+# rm(rede_ruas, rios_principais, bordas_cidade, corpos_dagua, areas_verdes, corpos_dagua) %>%
+#   gc()
+
+```
+
+# Análise da dinâmica imobiliária
+
+
+
+## Comparação entre as Macroáreas e a variação no município  
+
+
+
+```{r}
+plot_serie <- function(df, t0, group_var, var) {
+  df <- df %>%
+    st_drop_geometry() %>%
+    filter(ano_execucao >= t0) %>%
+    filter(!is.na(macroarea)) %>%
+    mutate(macroarea = fct_other(macroarea, keep = c("MEM", "MUC", "MQU", "MRVU"),
+                                 other_level = "Outra")) %>%
+    filter(macroarea != "Outra") %>%
+    group_by(ano_execucao, !!enquo(group_var)) %>% 
+    summarize(n_empreendimentos = n(),
+              n_unidades = sum(n_unidades, na.rm = TRUE),
+              area_do_terreno = sum(area_do_terreno, na.rm = TRUE),
+              area_do_terreno_por_area = sum(area_do_terreno, na.rm = TRUE)/first(area_edificavel),
+              area_da_construcao = sum(area_da_construcao, na.rm = TRUE),
+              area_da_construcao_por_area = sum(area_da_construcao, na.rm = TRUE)/first(area_edificavel),
+              n_unidades_por_area_edificavel = n_unidades/(area_edificavel/1000),
+              cota_parte = mean(cota_parte, na.rm = TRUE)
+    ) %>%
+    ungroup()
+  
+  return(ggplot(data = df) +
+           geom_point(aes(ano_execucao, {{var}}, color = {{group_var}}, group = {{group_var}})) +
+           geom_line(aes(ano_execucao, {{var}}, color = {{group_var}}, group = {{group_var}}),
+                     size = 2) +
+           # geom_label(aes(ano_execucao, {{var}}, label = round({{var}}), group = {{group_var}}),
+           #            fill = "white", position = position_dodge(0.9),
+           #            vjust = -.5, size = 6) +
+           scale_x_continuous(limits = c(2013, 2021),
+                              breaks = seq(2013, 2021, 1))
+  )
+}
+
+```
+
+### Evolução do número de empreendimentos, unidades residenciais, área construída e área de terreno licenciados por macroáreas urbanas (2013-2021) 
+```{r}
+# n_empreendimentos
+plot_serie_macroareas_lotes <- 
+  plot_serie(df = alvaras_por_lote, t0 = 2013, 
+             group_var = macroarea, var = n_empreendimentos) +
+  scale_color_manual(values = c("MQU" = "darkorange", "MEM" = "red", "MUC" = "pink2", "MRVU" = "gold")) +
+  labs(x = "", y ="", color = "", title = "Empreendimentos") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5))
+
+# Unidades
+plot_serie_macroareas_unidades <-
+  plot_serie(df = alvaras_por_lote, t0 = 2013, 
+             group_var = macroarea, var = n_unidades) +
+  scale_y_continuous(labels = function(x) paste0(x, " UH's")) +
+  scale_color_manual(values = c("MQU" = "darkorange", "MEM" = "red", "MUC" = "pink2", "MRVU" = "gold")) +
+  labs(x = "", y ="", color = "", title = "Unidades") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5))
+
+# Área de terreno
+plot_serie_macroareas_area_terreno <-
+  plot_serie(df = alvaras_por_lote, t0 = 2013, 
+             group_var = macroarea, var = area_do_terreno) +
+  scale_y_continuous(labels = function(x) paste0(x, " m²")) +
+  scale_color_manual(values = c("MQU" = "darkorange", "MEM" = "red", "MUC" = "pink2", "MRVU" = "gold")) +
+  labs(x = "", y ="", color = "",
+       title = "Área do terreno") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5))
+
+# Area construída 
+plot_serie_macroareas_area_construcao <-
+  plot_serie(df = alvaras_por_lote, t0 = 2013, 
+             group_var = macroarea, var = area_da_construcao) +
+  scale_y_continuous(labels = function(x) paste0(x, " m²")) +
+  scale_color_manual(values = c("MQU" = "darkorange", "MEM" = "red", "MUC" = "pink2", "MRVU" = "gold")) +
+  labs(x = "", y ="", color = "",
+       title = "Área construída ") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5))
+
+(plot_serie_macroareas_lotes | plot_serie_macroareas_unidades) /
+  (plot_serie_macroareas_area_terreno | plot_serie_macroareas_area_construcao) +
+  plot_annotation(
+    # title = "Evolução do número médio de unidades dos empreendimentos licenciados por tipo do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+  )
+
+
+```
+
+
+
+
+
+## Características tipológicas  
+
+
+
+
+### Percentual de empreendimentos na MEM segundo porte (quantidade de UH's) e número médio de pavimentos
+```{r}
+
+plot_percent_mem_porte <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  filter(macroarea == "MEM") %>%
+  filter(!is.na(porte)) %>%
+  count(porte, ano_execucao) %>%
+  group_by(ano_execucao) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(ano_execucao, n, fill = porte)) +
+  geom_bar(stat="identity", position = "fill", alpha = .9, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)),
+            position = position_fill(vjust = 0.5),
+            size = 3) +
+  scale_fill_manual(values = c("gray25", "gray50", "gray75"), na.value = "white") +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  scale_x_continuous(limits = c(2012.5, 2021.5), breaks = seq(2013, 2021, 1)) +
+  labs(title = "Porte", 
+       x = "",
+       y = "", fill = "",
+       # caption = "*Obs: Até 50 unidades = pequeno porte | 50 a 200 unidades = Médio porte | Mais que 200 unidades = grande porte* <br>"
+  ) +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(legend.position = "bottom",
+        plot.caption = element_markdown(size = 14),
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5),
+        legend.text = element_text(size = 12)
+        # legend.direction = "vertical",
+        # legend.justification = "left"
+  )
+
+#
+plot_percent_mem_pavimentos <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  filter(!is.na(n_pavimentos_por_bloco)) %>%
+  mutate(tipo = case_when(n_pavimentos_por_bloco >= 16.5 ~ "Mais que 16 pavimentos",
+                          between(n_pavimentos_por_bloco, 8.5, 16.49) ~ "9 a 16 pavimentos",
+                          between(n_pavimentos_por_bloco, 3.5, 8.49) ~ "4 a 8 pavimentos", 
+                          n_pavimentos_por_bloco <= 3 ~ "Até 3 pavimentos") %>%
+           factor(levels = c("Até 3 pavimentos", "4 a 8 pavimentos", 
+                             "9 a 16 pavimentos", "Mais que 16 pavimentos"))) %>%
+  count(ano_execucao, tipo) %>%
+  group_by(ano_execucao) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(ano_execucao, n, fill = tipo)) +
+  geom_bar(stat="identity", position = "fill", alpha = .9, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)), 
+            position = position_fill(vjust = 0.5),
+            size = 4) +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  scale_x_continuous(limits = c(2012.5, 2021.5), breaks = seq(2013, 2021, 1)) +
+  scale_fill_manual(values = c("snow2", "snow3", "snow4", "gray25")) +
+  labs(x = "", title = "Pavimentos",
+       y = "", fill = "") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5),
+        legend.text = element_text(size = 12)
+        # legend.direction = "vertical",
+        # legend.justification = "left"
+  )
+
+
+(plot_percent_mem_porte | plot_percent_mem_pavimentos) + 
+  plot_annotation(
+    # title = "Evolução do número médio de unidades dos empreendimentos licenciados por tipo do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+  )
+
+```
+
+
+
+
+```{r}
+
+#
+plot_percent_mem_lotes_por_area_terreno <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  filter(macroarea == "MEM") %>%
+  filter(fx_area_terreno != "Sem informação") %>%
+  group_by(ano_execucao, fx_area_terreno) %>%
+  summarize(n = n()) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(ano_execucao, n, fill = fx_area_terreno)) +
+  geom_bar(stat="identity", position = "fill", alpha = .9, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)),
+            position = position_fill(vjust = 0.5),
+            size = 4) +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_fill_manual(values = c("white", "gray80", "gray60", "gray40", "gray20")) +
+  labs(x = "",
+       y = "",
+       title = "Empreendimentos") +
+  theme_bw(base_size = 24, base_family = "lato") +
+  theme(legend.title = element_blank(),
+        axis.text.x = element_text(size = 12),
+        plot.caption = element_markdown(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5),
+        legend.position = "none",
+        legend.justification = "left")
+
+# Unidades
+plot_percent_mem_unidades_por_area_terreno <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  filter(macroarea == "MEM") %>%
+  filter(!is.na(n_unidades)) %>%
+  filter(fx_area_terreno != "Sem informação") %>%
+  group_by(ano_execucao, fx_area_terreno) %>%
+  summarize(n = sum(n_unidades, na.rm = TRUE)) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(ano_execucao, n, fill = fx_area_terreno)) +
+  geom_bar(stat="identity", position = "fill", alpha = .9, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)),
+            position = position_fill(vjust = 0.5),
+            size = 4) +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_fill_manual(values = c("white", "gray80", "gray60", "gray40", "gray20")) +
+  labs(x = "",
+       y = "",
+       title = "Unidades") +
+  theme_bw(base_size = 24, base_family = "lato") +
+  theme(legend.title = element_blank(),
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5),
+        plot.caption = element_markdown(size = 12),
+        legend.position = "none",
+        legend.justification = "left")
+
+
+# Área do terreno
+plot_percent_mem_area_do_terreno_por_area_terreno <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  filter(macroarea == "MEM") %>%
+  filter(!is.na(n_unidades)) %>%
+  filter(fx_area_terreno != "Sem informação") %>%
+  group_by(ano_execucao, fx_area_terreno) %>%
+  summarize(n = sum(area_do_terreno, na.rm = TRUE)) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(ano_execucao, n, fill = fx_area_terreno)) +
+  geom_bar(stat="identity", position = "fill", alpha = .9, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)),
+            position = position_fill(vjust = 0.5),
+            size = 4) +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_fill_manual(values = c("white", "gray80", "gray60", "gray40", "gray20")) +
+  labs(x = "",
+       y = "",
+       title = "Área do terreno") +
+  theme_bw(base_size = 24, base_family = "lato") +
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size = 12),
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5),
+        plot.caption = element_markdown(size = 12),
+        legend.position = "bottom")
+
+# Área construída 
+plot_percent_mem_area_da_construcao_por_area_terreno <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  filter(macroarea == "MEM") %>%
+  filter(!is.na(n_unidades)) %>%
+  filter(fx_area_terreno != "Sem informação") %>%
+  group_by(ano_execucao, fx_area_terreno) %>%
+  summarize(n = sum(area_da_construcao, na.rm = TRUE)) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(ano_execucao, n, fill = fx_area_terreno)) +
+  geom_bar(stat="identity", position = "fill", alpha = .9, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)),
+            position = position_fill(vjust = 0.5),
+            size = 4) +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_fill_manual(values = c("white", "gray80", "gray60", "gray40", "gray20")) +
+  labs(x = "",
+       y = "",
+       title = "Área construída ") +
+  theme_bw(base_size = 24, base_family = "lato") +
+  theme(legend.title = element_blank(),
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5),
+        plot.caption = element_markdown(size = 12),
+        legend.position = "none",
+        legend.justification = "left")
+
+#
+(plot_percent_mem_lotes_por_area_terreno | plot_percent_mem_unidades_por_area_terreno) /
+  (plot_percent_mem_area_do_terreno_por_area_terreno | plot_percent_mem_area_da_construcao_por_area_terreno) +
+  plot_annotation(
+    # title = "Evolução do número médio de unidades dos empreendimentos licenciados por tipo do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+  )
+
+```
+
+
+### Evolução do número de unidades por empreendimento, da área construída por unidade, da cota parte e do número de pavimentos dos empreendimentos licenciados no perímetro da atual MEM (2013-2021)
+```{r}
+#
+plot_mem_media_unidades <- 
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  group_by(ano_execucao) %>%
+  summarize(n_unidades = mean(n_unidades, na.rm = TRUE)) %>%
+  ggplot() +
+  geom_line(aes(ano_execucao, n_unidades), color = "red", size = 2) +
+  geom_label(aes(ano_execucao, n_unidades,
+                 label = round(n_unidades)),
+             vjust = -.5, size = 6) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_y_continuous(limits =  c(0, 220), labels = function(x) paste0(x, " UH's")) +
+  labs(x = "", y = "",
+       title = "Unidades por empreendimento") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5))
+
+#
+plot_mem_unidades_area_media <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  group_by(ano_execucao) %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  summarize(area_por_unidade = mean(area_da_construcao/n_unidades, na.rm = TRUE)) %>%
+  ggplot() +
+  geom_line(aes(ano_execucao, area_por_unidade), color = "red", size = 2) +
+  geom_label(aes(ano_execucao, area_por_unidade,
+                 label = round(area_por_unidade)),
+             vjust = -.5, size = 6) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 170), labels = function(x) paste0(x, " m²")) +
+  labs(x = "", y = "",
+       title = "Área construída por unidade") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5))
+
+#
+plot_mem_cota_parte <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  group_by(ano_execucao) %>%
+  summarize(cota_parte = mean(cota_parte, na.rm = TRUE)) %>%
+  ggplot() +
+  geom_line(aes(ano_execucao, cota_parte), color = "red", size = 2) +
+  geom_label(aes(ano_execucao, cota_parte,
+                 label = round(cota_parte, 1)),
+             vjust = -.5, size = 6) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 60), labels = function(x) paste0(x, " m²/UH")) +
+  labs(x = "", y = "",
+       title = "Cota parte") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5))
+#
+plot_mem_pavimentos <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  group_by(ano_execucao) %>%
+  summarize(n_pavimentos_por_bloco = mean(n_pavimentos_por_bloco, na.rm = TRUE)) %>%
+  ggplot() +
+  geom_line(aes(ano_execucao, n_pavimentos_por_bloco), color = "red", size = 2) +
+  geom_label(aes(ano_execucao, n_pavimentos_por_bloco,
+                 label = round(n_pavimentos_por_bloco, 1)),
+             vjust = -.5, size = 6) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 15)) +
+  labs(x = "", y = "",
+       title = "Pavimentos") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5))
+
+(plot_mem_media_unidades | plot_mem_unidades_area_media) /
+  (plot_mem_cota_parte | plot_mem_pavimentos) +
+  plot_annotation(
+    # title = "Evolução do número médio de unidades dos empreendimentos licenciados por tipo do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+  )
+
+
+```
+
+
+## Por categoria de uso (ERM e ERP) 
+
+
+
+### Evolução do número de empreendimentos, unidades residenciais, área construída e área de terreno licenciados na MEM por categoria (2013-2021) 
+```{r}
+#
+plot_mem_lotes_por_categoria <- 
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  group_by(ano_execucao, categoria_de_uso_grupo) %>%
+  summarize(n = n()) %>%
+  ggplot(aes(ano_execucao, n, fill = categoria_de_uso_grupo)) +
+  geom_col(position = "dodge", alpha = .9, color = "black") +
+  # geom_label(aes(label = n, group = categoria_de_uso_grupo), 
+  #            fill = "white", position = position_dodge(0.9),
+  #            vjust = -.5, size = 6) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 210)) +
+  labs(x = "", y = "",
+       title = "Empreendimentos", fill = "") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        legend.position = c(0.2, 0.9),
+        legend.direction = "horizontal",
+        plot.title = element_text(face = "italic", hjust = .5))
+
+#
+plot_mem_unidades_por_categoria <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  group_by(ano_execucao, categoria_de_uso_grupo) %>%
+  summarize(n = sum(n_unidades, na.rm = TRUE)) %>%
+  ggplot(aes(ano_execucao, n, fill = categoria_de_uso_grupo)) +
+  geom_col(position = "dodge", alpha = .9, color = "black") +
+  # geom_label(aes(label = n, group = categoria_de_uso_grupo), 
+  #            fill = "white", position = position_dodge(0.9),
+  #            vjust = -.5, size = 6) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 34000), #breaks = seq(0, 80000, 10000), 
+                     labels = function(x) paste0(x, " UH's")) +
+  labs(x = "", y = "",
+       title = "Unidades") +
+  theme_pander(base_size = 20, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 14),
+        legend.position = "none",
+        plot.title = element_text(face = "italic", hjust = .5))
+
+#
+plot_mem_area_da_construcao_por_categoria <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  group_by(ano_execucao, categoria_de_uso_grupo) %>%
+  summarize(n = sum(area_da_construcao, na.rm = TRUE)) %>%
+  ggplot(aes(ano_execucao, n, fill = categoria_de_uso_grupo)) +
+  geom_col(position = "dodge", alpha = .9, color = "black") +
+  # geom_label(aes(label = round(n), group = categoria_de_uso_grupo), 
+  #            fill = "white", position = position_dodge(0.9), alpha = 0.8,
+  #            vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 2100000), labels = function(x) paste0(x, " m²")) +
+  labs(x = "", y = "",
+       title = "Área construída") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 14),
+        legend.position = "none",
+        plot.title = element_text(face = "italic", hjust = .5))
+#
+plot_mem_area_do_terreno_por_categoria <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  group_by(ano_execucao, categoria_de_uso_grupo) %>%
+  summarize(n = sum(area_do_terreno, na.rm = TRUE)) %>%
+  ggplot(aes(ano_execucao, n, fill = categoria_de_uso_grupo)) +
+  geom_col(position = "dodge", alpha = .9, color = "black") +
+  # geom_label(aes(label = round(n), group = categoria_de_uso_grupo), 
+  #            fill = "white", position = position_dodge(0.9),
+  #            vjust = -.5, size = 5) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 740000), labels = function(x) paste0(x, " m²")) +
+  labs(x = "", y = "",
+       title = "Área do terreno") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 14),
+        legend.position = "none",
+        plot.title = element_text(face = "italic", hjust = .5))
+
+(plot_mem_lotes_por_categoria | plot_mem_unidades_por_categoria) /
+  (plot_mem_area_do_terreno_por_categoria | plot_mem_area_da_construcao_por_categoria) +
+  plot_annotation(
+    # title = "Evolução do número médio de unidades dos empreendimentos licenciados por tipo do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+  )
+
+```
+
+### Distribuição da quantidade de UH's do empreendimento e da área de terreno por categoria 
+```{r}
+# Média de unidades
+plot_raincloud_mem_media_unidades_por_periodo <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(legislacao %in% c("PDE2002eLPUOS2004", "PDE2014eLPUOS2016")) %>%
+  mutate(legislacao = if_else(legislacao == "PDE2002eLPUOS2004", "PDE2002 e LPUOS2004", 
+                              "PDE2014 e LPUOS2016") %>%
+           factor(levels = c("PDE2002 e LPUOS2004", "PDE2014 e LPUOS2016"))) %>%
+  filter(macroarea == "MEM") %>%
+  ggplot(aes(categoria_de_uso_grupo, n_unidades, color = categoria_de_uso_grupo)) +
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA,
+    slab_colour = "black",
+    slab_size = 0.5
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    colour = "black"
+  ) +
+  stat_summary(
+    colour="black", geom="label", fill = "white", alpha = .4,
+    fun.data = n_fun <- function(x){
+      return(data.frame(y = mean(x),
+                        label = paste0("n = ", length(x))))
+    },
+    position = position_nudge(x = 0.25),
+    size = 6) +
+  stat_summary(fun = mean, colour="black", geom="label", fill = "white", 
+               alpha = .4, show.legend = FALSE, position = position_nudge(x = 0.5),
+               # position = position_dodge(0.9), vjust = 0.5, 
+               size = 6,
+               aes(label=paste0("μ = ", round(..y.., digits=1)))) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    transformation = position_jitter(width = 0.1, height = 0),
+    # range_scale = .6, 
+    ## add some transparency
+    alpha = 5
+  ) +
+  scale_y_continuous(#limits = c(0, 1100),
+    breaks = seq(0, 500, 250),
+    labels = function(x) paste0(x, " UH's")) +
+  coord_flip(ylim = c(0, 600)) +
+  facet_wrap(~ legislacao, ncol = 2) +
+  labs(title = "Unidades",
+       x = "",
+       y = "") +
+  theme_pander(base_size = 18, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0.5, face = "italic"),
+        plot.caption = element_text(size = 16),
+        axis.text.x = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal") 
+#
+plot_raincloud_mem_area_terreno_por_periodo <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(legislacao %in% c("PDE2002eLPUOS2004", "PDE2014eLPUOS2016")) %>%
+  mutate(legislacao = if_else(legislacao == "PDE2002eLPUOS2004", "PDE2002 e LPUOS2004", 
+                              "PDE2014 e LPUOS2016") %>%
+           factor(levels = c("PDE2002 e LPUOS2004", "PDE2014 e LPUOS2016"))) %>%
+  filter(macroarea == "MEM") %>%
+  ggplot(aes(categoria_de_uso_grupo, area_do_terreno, color = categoria_de_uso_grupo)) +
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA,
+    slab_colour = "black",
+    slab_size = 0.5
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    colour = "black"
+  ) +
+  stat_summary(
+    colour="black", geom="label", fill = "white", alpha = .4,
+    fun.data = n_fun <- function(x){
+      return(data.frame(y = mean(x),
+                        label = paste0("n = ", length(x))))
+    },
+    position = position_nudge(x = 0.25),
+    size = 6) +
+  stat_summary(fun = mean, colour="black", geom="label", fill = "white", 
+               alpha = .4, show.legend = FALSE, position = position_nudge(x = 0.5),
+               # position = position_dodge(0.9), vjust = 0.5, 
+               size = 6,
+               aes(label=paste0("μ = ", round(..y.., digits=1)))) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    transformation = position_jitter(width = 0.1, height = 0),
+    # range_scale = .6, 
+    ## add some transparency
+    alpha = 5
+  ) +
+  scale_y_continuous(#limits = c(0, 1100),
+    breaks = seq(0, 30000, 10000),
+    labels = function(x) paste0(x, " m²")) +
+  coord_flip(ylim = c(0, 40000)
+  ) +
+  facet_wrap(~ legislacao, ncol = 2) +
+  labs(title = "Área do terreno",
+       x = "",
+       y = "") +
+  theme_pander(base_size = 18, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0.5, face = "italic"),
+        plot.caption = element_text(size = 16),
+        axis.text.x = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal") 
+
+(plot_raincloud_mem_media_unidades_por_periodo | plot_raincloud_mem_area_terreno_por_periodo) +
+  plot_annotation(
+    # title = "Evolução do número médio de unidades dos empreendimentos licenciados por tipo do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+  )
+
+
+```
+
+
+### Distribuição das cota-partes dos empreendimentos por categoria 
+```{r}
+alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(legislacao %in% c("PDE2002eLPUOS2004", "PDE2014eLPUOS2016")) %>%
+  mutate(legislacao = if_else(legislacao == "PDE2002eLPUOS2004", "PDE2002 e LPUOS2004", 
+                              "PDE2014 e LPUOS2016") %>%
+           factor(levels = c("PDE2002 e LPUOS2004", "PDE2014 e LPUOS2016"))) %>%
+  filter(macroarea == "MEM") %>%
+  ggplot(aes(categoria_de_uso_grupo, cota_parte, color = categoria_de_uso_grupo)) +
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.2, 
+    point_colour = NA,
+    slab_colour = "black",
+    slab_size = 0.5
+  ) + 
+  geom_boxplot(
+    width = .15, 
+    outlier.shape = NA,
+    colour = "black"
+  ) +
+  stat_summary(
+    colour="black", geom="label", fill = "white", alpha = .4,
+    fun.data = n_fun <- function(x){
+      return(data.frame(y = mean(x),
+                        label = paste0("n = ", length(x))))
+    },
+    position = position_nudge(x = 0.25),
+    size = 5) +
+  stat_summary(fun = mean, colour="black", geom="label", fill = "white", 
+               alpha = .4, show.legend = FALSE, position = position_nudge(x = 0.5),
+               # position = position_dodge(0.9), vjust = 0.5, 
+               size = 5,
+               aes(label=paste0("μ = ", round(..y.., digits=1)))) +
+  ## add justified jitter from the {gghalves} package
+  gghalves::geom_half_point(
+    ## draw jitter on the left
+    side = "l", 
+    ## control range of jitter
+    transformation = position_jitter(width = 0.1, height = 0),
+    # range_scale = .6, 
+    ## add some transparency
+    alpha = 5
+  ) +
+  scale_y_continuous(#limits = c(0, 1100),
+    # breaks = seq(200, 1000, 200),
+    labels = function(x) paste0(x, " m²/UH")) +
+  coord_flip(ylim = c(0, 100)
+  ) +
+  facet_wrap(~ legislacao, ncol = 2) +
+  labs(#title = "Média de unidades dos empreendimentos de médio/grande porte por tipo do empreendimento - 2017-2020",
+    x = "",
+    y = "") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(plot.title = element_text(hjust = 0.5, face = "plain", size = 18),
+        plot.caption = element_text(size = 16),
+        axis.text.x = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.position = "none",
+        legend.direction = "horizontal") 
+```
+
+
+
+### Mapa da distribuição espacial dos empreendimentos ERM por porte (antes e depois)
+```{r}
+#
+ggplot() +
+  geom_sf(data = bordas_cidade) +
+  geom_sf(data = mem_por_setor, aes(fill = mem_setor), alpha = 0.2,
+          show.legend = FALSE) +
+  geom_sf(data = alvaras_por_lote %>% 
+            filter(legislacao %in% c("PDE2002eLPUOS2004", "PDE2014eLPUOS2016")) %>%
+            filter(categoria_de_uso_grupo == "ERM") %>%
+            filter(macroarea == "MEM"),
+          mapping = aes(size = n_unidades),
+          color = "black",
+          fill = "#009491",
+          shape = 21,
+          alpha = .5) +
+  # geom_label(data = mem_por_setor %>%
+  #              group_by(mem_setor) %>%
+  #              summarize(
+  #                X = mean(X),
+  #                Y = mean(Y)),
+  #            aes(x = X, y = Y, label = mem_setor),
+  #            size = 3, alpha = 0.3,
+  #            fontface = "bold") +
+  scale_size_continuous(limits = c(1, 500)) +
+  facet_wrap(~legislacao) +
+  labs(x = "", y = "",
+       size = "Número de unidades",
+       title  = "",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+       size = "") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(plot.caption = element_markdown(size = 16),
+        plot.title = element_text(face = "italic", hjust = .5),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        legend.position = c(0.9, 0.15),
+        legend.title = element_text(face = "plain",  size = 16)) +
+  coord_sf(xlim = st_bbox(bbox_sp)[c(1, 3)],
+           ylim = st_bbox(bbox_sp)[c(2, 4)])
+```
+
+
+### Mapa da distribuição espacial dos empreendimentos ERP por porte (antes e depois)
+```{r}
+
+#
+ggplot() +
+  geom_sf(data = bordas_cidade) +
+  geom_sf(data = mem_por_setor, aes(fill = mem_setor), alpha = 0.2,
+          show.legend = FALSE) +
+  geom_sf(data = alvaras_por_lote %>% 
+            filter(legislacao %in% c("PDE2002eLPUOS2004", "PDE2014eLPUOS2016")) %>%
+            filter(categoria_de_uso_grupo == "ERP") %>%
+            filter(macroarea == "MEM"),
+          mapping = aes(size = n_unidades),
+          color = "black",
+          fill = "#c4161c",
+          shape = 21,
+          alpha = .5) +
+  # geom_label(data = mem_por_setor %>%
+  #              group_by(mem_setor) %>%
+  #              summarize(
+  #                X = mean(X),
+  #                Y = mean(Y)),
+  #            aes(x = X, y = Y, label = mem_setor),
+  #            size = 3, alpha = 0.3,
+  #            fontface = "bold") +
+  scale_size_continuous(limits = c(1, 500)) +
+  facet_wrap(~legislacao) +
+  labs(x = "", y = "",
+       title  = "",
+       size = "Número de unidades",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+       size = "") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(plot.caption = element_markdown(size = 16),
+        plot.title = element_text(face = "italic", hjust = .5),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        legend.position = c(0.9, 0.15),
+        legend.title = element_text(face = "plain",  size = 16)) +
+  coord_sf(xlim = st_bbox(bbox_sp)[c(1, 3)],
+           ylim = st_bbox(bbox_sp)[c(2, 4)])
+
+
+
+
+```
+
+
+### Mapa da distribuição espacial dos empreendimentos ERM por cota-parte (antes e depois)
+```{r}
+#
+ggplot() +
+  geom_sf(data = bordas_cidade) +
+  geom_sf(data = mem_por_setor, aes(fill = mem_setor), alpha = 0.2,
+          show.legend = FALSE) +
+  geom_sf(data = alvaras_por_lote %>% 
+            filter(legislacao %in% c("PDE2002eLPUOS2004", "PDE2014eLPUOS2016")) %>%
+            filter(categoria_de_uso_grupo == "ERM") %>%
+            filter(macroarea == "MEM"),
+          mapping = aes(size = cota_parte),
+          color = "black",
+          fill = "#009491",
+          shape = 21,
+          alpha = .5) +
+  geom_label(data = mem_por_setor %>%
+               group_by(mem_setor) %>%
+               summarize(
+                 X = mean(X),
+                 Y = mean(Y)),
+             aes(x = X, y = Y, label = mem_setor),
+             size = 3, alpha = 0.3,
+             fontface = "bold") +
+  scale_size_continuous(limits = c(1, 100)) +
+  facet_wrap(~legislacao) +
+  labs(x = "", y = "",
+       size = "Cota-parte",
+       title  = "",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+       size = "") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(plot.caption = element_markdown(size = 16),
+        plot.title = element_text(face = "italic", hjust = .5),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        legend.position = c(0.9, 0.15),
+        legend.title = element_text(face = "plain",  size = 16)) +
+  coord_sf(xlim = st_bbox(bbox_sp)[c(1, 3)],
+           ylim = st_bbox(bbox_sp)[c(2, 4)])
+```
+
+
+### Mapa da distribuição espacial dos empreendimentos ERP por cota-parte (antes e depois)
+```{r}
+
+#
+ggplot() +
+  geom_sf(data = bordas_cidade) +
+  geom_sf(data = mem_por_setor, aes(fill = mem_setor), alpha = 0.2,
+          show.legend = FALSE) +
+  geom_sf(data = alvaras_por_lote %>% 
+            filter(legislacao %in% c("PDE2002eLPUOS2004", "PDE2014eLPUOS2016")) %>%
+            filter(categoria_de_uso_grupo == "ERP") %>%
+            filter(macroarea == "MEM"),
+          mapping = aes(size = cota_parte),
+          color = "black",
+          fill = "#c4161c",
+          shape = 21,
+          alpha = .5) +
+  geom_label(data = mem_por_setor %>%
+               group_by(mem_setor) %>%
+               summarize(
+                 X = mean(X),
+                 Y = mean(Y)),
+             aes(x = X, y = Y, label = mem_setor),
+             size = 3, alpha = 0.3,
+             fontface = "bold") +
+  scale_size_continuous(limits = c(1, 100)) +
+  facet_wrap(~legislacao) +
+  labs(x = "", y = "",
+       title  = "",
+       size = "Cota-parte",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+       size = "") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(plot.caption = element_markdown(size = 16),
+        plot.title = element_text(face = "italic", hjust = .5),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        legend.position = c(0.9, 0.15),
+        legend.title = element_text(face = "plain",  size = 16)) +
+  coord_sf(xlim = st_bbox(bbox_sp)[c(1, 3)],
+           ylim = st_bbox(bbox_sp)[c(2, 4)])
+
+
+
+```
+
+
+### Localização de ERP's por porte (2019-2021) 
+```{r}
+#
+plot_heatmap_erp_pequeno <-
+  # geo_sp_simple +
+  ggplot() +
+  geom_sf(data = bordas_cidade, alpha = 0.1) +
+  geom_sf(data = mem_por_setor, alpha = 0.1, fill = "red") +
+  geom_sf(data = alvaras_por_lote %>% 
+            filter(periodo == "2019-2021") %>%
+            filter(macroarea == "MEM") %>%
+            filter(categoria_de_uso_grupo == "ERP") %>%
+            mutate(porte_2 = case_when(
+              # n_unidades <= 4 ~ "Menos de 5 unidades",
+              # between(n_unidades, 5, 9) ~ "5 a 10 unidades",
+              n_unidades < 10 ~ "Menos de 10 unidades",
+              between(n_unidades, 10, 19.9) ~ "10 a 20 unidades",
+              between(n_unidades, 20, 50) ~ "De 20 a 50 unidades",
+              between(n_unidades, 50.1, 200) ~ "De 50 a 200 unidades",
+              between(n_unidades, 200.1, 500) ~ "De 200 a 500 unidades",
+              n_unidades > 500 ~ "Mais de 500 unidades",
+              TRUE ~ NA_character_) %>%
+                fct_reorder(n_unidades)
+            ) %>%
+            filter(!is.na(porte_2)),
+          # mapping = aes(size = n_unidades),
+          color = "#c4161c",
+          alpha = .7) +
+  stat_density2d(aes(st_coordinates(geometry)[,1],
+                     st_coordinates(geometry)[,2],
+                     fill = ..level..,
+                     alpha = ..level..),
+                 h = 0.07,
+                 show.legend = FALSE,
+                 colour = "grey",
+                 geom = "polygon",
+                 data = alvaras_por_lote %>%
+                   mutate(porte_2 = case_when(
+                     # n_unidades <= 4 ~ "Menos de 5 unidades",
+                     # between(n_unidades, 5, 9) ~ "5 a 10 unidades",
+                     n_unidades < 10 ~ "Menos de 10 unidades",
+                     between(n_unidades, 10, 19.9) ~ "10 a 20 unidades",
+                     between(n_unidades, 20, 50) ~ "De 20 a 50 unidades",
+                     between(n_unidades, 50.1, 200) ~ "De 50 a 200 unidades",
+                     between(n_unidades, 200.1, 500) ~ "De 200 a 500 unidades",
+                     n_unidades > 500 ~ "Mais de 500 unidades",
+                     TRUE ~ NA_character_) %>%
+                       fct_reorder(n_unidades)) %>%
+                   filter(!is.na(porte_2)) %>%
+                   filter(periodo == "2019-2021") %>%
+                   filter(macroarea == "MEM") %>%
+                   
+                   filter(categoria_de_uso_grupo == "ERP")) +
+  scale_fill_gradient(low = "white", high = "#c4161c", limits = c(0, 70)) +
+  scale_size_continuous(limits = c(1, 1500)) +
+  labs(x = "", y = "",
+       title  = "ERP - 2019-2021",
+       size = "Número de unidades") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(plot.caption = element_markdown(size = 16),
+        plot.title = element_text(face = "italic", hjust = .5),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        legend.position = c(0.7, 0.2),
+        legend.title = element_text(face = "plain",  size = 16),
+        strip.text.x = element_text(size = 14)) +
+  facet_wrap(~porte_2, ncol = 3) +
+  coord_sf(xlim = st_bbox(bbox_sp)[c(1, 3)],
+           ylim = st_bbox(bbox_sp)[c(2, 4)])
+#
+(plot_heatmap_erp_pequeno) +
+  plot_annotation(caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo", 
+                  theme = list(plot.title = element_text(size = 20, face = "bold"),
+                               plot.caption = element_markdown(size = 16))
+  )
+
+```
+
+
+## Por zoneamento atual 
+
+
+
+### Percentual de empreendimentos na MEM por zoneamento - antes e depois
+```{r}
+#
+alvaras_por_lote %>%
+  filter(macroarea == "MEM") %>%
+  filter(!is.na(periodo)) %>%
+  count(zoneamento_grupo, periodo) %>%
+  group_by(periodo) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(periodo, n, fill = zoneamento_grupo)) +
+  geom_bar(stat="identity", position = "fill", alpha = .9, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)), 
+            position = position_fill(vjust = 0.5),
+            size = 5) +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  scale_x_discrete(labels = function(x)str_wrap(x, width = 10)) +
+  scale_fill_manual(values = c("ZCs&ZMs" = "#3CBFAE", "EETU" = "#F58220", "EETU Futuros" = "#f6bf38",
+                               "ZEIS Aglomerado" = "#E80724", "ZEIS Vazio" = "#F69679", 
+                               "Outros" = "#414042", "ZDE&ZPI" = "blue")) +
+  labs(x = "",
+       y = "",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(legend.title = element_blank(),
+        plot.caption = element_markdown(size = 16),
+        legend.position = "bottom",
+        legend.justification = "left")
+```
+
+
+
+### Distribuição dos licenciamentos por categoria e zona de uso a partir do zoneamento vigente 
+```{r}
+#
+alvaras_por_lote %>%
+  filter(macroarea == "MEM") %>%
+  filter(!is.na(periodo)) %>%
+  count(zoneamento_grupo, periodo, categoria_de_uso_grupo) %>%
+  group_by(periodo, categoria_de_uso_grupo) %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(periodo, n, fill = zoneamento_grupo)) +
+  geom_bar(stat="identity", position = "fill", alpha = .9, color = "black") +
+  geom_text(aes(label = label_percent(accuracy = 0.1)(prop)), 
+            position = position_fill(vjust = 0.5),
+            size = 5) +
+  scale_y_continuous(labels = percent, breaks = seq(0, 1, 0.2)) +
+  scale_x_discrete(labels = function(x)str_wrap(x, width = 10)) +
+  scale_fill_manual(values = c("ZCs&ZMs" = "#3CBFAE", "EETU" = "#F58220", "EETU Futuros" = "#f6bf38",
+                               "ZEIS Aglomerado" = "#E80724", "ZEIS Vazio" = "#F69679", 
+                               "Outros" = "#414042", "ZDE&ZPI" = "blue")) +
+  facet_wrap(~categoria_de_uso_grupo) +
+  labs(x = "",
+       y = "",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(legend.title = element_blank(),
+        plot.caption = element_markdown(size = 16, hjust = 0.5),
+        legend.position = "bottom",
+        legend.justification = "left")
+```
+
+
+### Evolução do coeficiente de aproveitamento total dos empreendimentos licenciados no perímetro da MEM (2013-2021)
+```{r, fig.height= 6}
+
+#
+plot_eetu_ca_total <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  group_by(ano_execucao) %>%
+  filter(ano_execucao >=2013) %>%
+  filter(macroarea == "MEM") %>%
+  summarize(ca_total = mean(ca_total, na.rm = TRUE)) %>%
+  ggplot() +
+  geom_line(aes(ano_execucao, ca_total), color = "red", size = 2) +
+  geom_label(aes(ano_execucao, ca_total,
+                 label = round(ca_total, 1)),
+             vjust = -.5, size = 6) +
+  scale_x_continuous(breaks = seq(2013, 2021, 1)) +
+  scale_y_continuous(limits = c(0, 7.5)) +
+  labs(x = "", y = "",
+       title = "Ca realizado") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        plot.title = element_text(face = "italic", hjust = .5))
+
+#
+plot_boxplot_eetu_ca_total <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(!is.na(periodo)) %>%
+  filter(macroarea == "MEM") %>%
+  ggplot(aes(periodo, ca_total, 
+             # fill = zoneamento_grupo,
+             group = periodo)) +
+  geom_jitter(width = 0.3, height = 20, alpha = .01) +
+  geom_boxplot(color = "black", fill = "red") +
+  stat_summary(fun = mean, colour="darkblue", geom="point", show.legend = FALSE, 
+               shape = 18, size = 3) +
+  coord_cartesian(ylim = c(0, 10)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 10)) +
+  # scale_y_continuous(labels = function(x) paste0(x, " m²/UH")) +
+  # scale_fill_manual(values = "red") +
+  labs(x = "", y = "",
+       title = "Ca realizado") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(axis.text.x = element_text(size = 12),
+        legend.position = "none",
+        plot.title = element_text(face = "italic", hjust = .5))
+
+
+(plot_eetu_ca_total | plot_boxplot_eetu_ca_total) +
+  plot_annotation(
+    # title = "Evolução do número médio de unidades dos empreendimentos licenciados por tipo do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: Prefeitura de São Paulo",
+    theme = list(plot.caption = element_markdown(size = 24))
+  )
+
+```
+
+### Total de quadras e total de área das quadras em eixo na MEM por tipo de Eixo
+```{r}
+#
+plot_mem_eixos <-
+  zonas_eetu_potencial %>%
+  st_drop_geometry() %>%
+  group_by(tipo_eixo) %>%
+  summarize(n = n()) %>%
+  ggplot(aes(tipo_eixo, n)) +
+  geom_col(aes(fill = tipo_eixo), color = "black") +
+  geom_label(aes(label = round(n)),
+             position = position_dodge(0.9), vjust = -0.5,
+             color = "black", size = 5) +
+  scale_y_continuous(limits = c(0, 1600)) +
+  scale_fill_manual(values = c("Potencial" = "red", "EETU" = "#F58220"#, 
+                               #"Decreto" = "#f6bf38"
+  )) +
+  labs(x = "",y = "",
+       title = "Quadras") +
+  theme(text = element_text(family = "lato", size = 18),
+        axis.text.y = element_text(hjust = 1, color = "black"),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "italic", hjust = .5),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.position = "none")
+
+#
+plot_mem_eixos_area <-
+  zonas_eetu_potencial %>%
+  st_drop_geometry() %>%
+  
+  group_by(tipo_eixo) %>%
+  summarize(area_zoneamento = sum(area_zoneamento, na.rm = TRUE)) %>%
+  ggplot(aes(tipo_eixo, area_zoneamento)) +
+  geom_col(aes(fill = tipo_eixo), color = "black") +
+  geom_label(aes(label = round(area_zoneamento)),
+             position = position_dodge(0.9), vjust = -0.5,
+             color = "black", size = 5) +
+  scale_y_continuous(#breaks = seq(0, 8000, 1500), 
+    limits = c(0, 21000000),
+    expand = c(0,0), label = function(x)paste0(x, " m²")) +
+  scale_fill_manual(values = c("Potencial" = "red", "EETU" = "#F58220"#, 
+                               #"Decreto" = "#f6bf38"
+  )) +
+  labs(x = "", y = "",
+       title = "Área das quadras") +
+  theme(text = element_text(family = "lato", size = 18),
+        axis.text.y = element_text(hjust = 1, color = "black"),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(face = "italic", hjust = .5),
+        legend.title = element_blank(),
+        legend.background = element_blank(),
+        legend.position = "none")
+
+
+
+(plot_mem_eixos | plot_mem_eixos_area) +
+  plot_annotation(
+    # title = "Evolução do número médio de unidades dos empreendimentos licenciados por tipo do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: Prefeitura de São Paulo",
+    theme = list(plot.caption = element_markdown(size = 24))
+  )
+
+```
+
+
+### Eixos demarcados vs eixos potenciais na MEM
+```{r}
+#
+ggplot() + 
+  geom_sf(data = subprefeituras) + 
+  geom_sf(data = mem, 
+          fill = "red", alpha = 0.1) + 
+  geom_sf(data = corredor_onibus, color = "#a62b4d") +
+  geom_sf(data = linha_trem, color = "#f15a22") +
+  geom_sf(data = linha_metro, color = "#faa61a") +
+  geom_sf(data = zonas_eetu_potencial %>% 
+            filter(tipo_eixo != "Decreto" & !is.na(tipo_transp)), 
+          mapping = aes(fill = tipo_transp), lwd = 0) +
+  scale_color_manual(values = c("#faa61a", "#a62b4d", "#f15a22")) +
+  scale_fill_manual(values = c("#faa61a", "#a62b4d", "#f15a22")) +
+  labs(caption = "**Fonte**: GeoSampa/Prefeitura de São Paulo",
+       fill = "Tipo de EETU") +
+  facet_wrap(~tipo_eixo) +
+  theme_bw(base_family = "lato", base_size = 24) +
+  theme(legend.position = c(0.85, 0.15),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        legend.box = "horizontal",
+        plot.caption = element_markdown(size = 16)) +
+  coord_sf(xlim = st_bbox(bbox_sp)[c(1, 3)],
+           ylim = st_bbox(bbox_sp)[c(2, 4)])
+```
+
+
+## Setores da MEM
+
+
+### Características da produção imobiliária por setores da MEM 
+
+
+
+### Setores da MEM por área do terreno e área construída  com percentual de unidades ERP - regramento atual
+```{r}
+
+# Setores da MEM por número de unidades e percentual de unidades ERP - Pós PDE
+
+#Área do terreno
+plot_mem_setores_area_terreno_vs_percentual_erp <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(legislacao == "PDE2014eLPUOS2016") %>%
+  filter(!is.na(mem_setor)) %>%
+  pivot_wider(names_from = categoria_de_uso_grupo, values_from = n_unidades) %>%
+  left_join(alvaras_por_lote %>%
+              st_drop_geometry() %>%
+              # filter(ano_execucao >= 2014) %>%
+              filter(legislacao == "PDE2014eLPUOS2016") %>%
+              filter(!is.na(mem_setor)) %>%
+              group_by(mem_setor) %>%
+              summarize(setor_n_unidades = sum(n_unidades, na.rm = TRUE))) %>%
+  group_by(mem_setor) %>%
+  summarize(
+    setor_area_do_terreno = sum(area_do_terreno, na.rm = TRUE),
+    setor_percent_erp = sum(ERP, na.rm = TRUE)/first(setor_n_unidades)) %>%
+  ungroup() %>%
+  ggplot(aes(fct_reorder(str_wrap(mem_setor, width = 30), setor_area_do_terreno),
+             setor_area_do_terreno)) +
+  geom_col(aes(fill = setor_percent_erp, group = mem_setor), color = "black") +
+  geom_text(aes(label = paste0(setor_area_do_terreno, " m²")),
+            size = 4, vjust = 0, hjust = -0.1) +
+  geom_text(aes(label = paste0(label_percent()(setor_percent_erp), " ERP's")),
+            size = 4, vjust = 2, hjust = -0.1) +
+  scale_y_continuous(#breaks = seq(0, 100000, 10000), 
+    limits = c(0, 380000),
+    expand = c(0,0),
+    labels = function(x) paste0(x, " m²")) +
+  scale_fill_gradient(low = "#009491", high = "#c4161c",
+                      labels = label_percent()
+  ) +
+  coord_flip() +
+  labs(x = "",
+       y = "",
+       fill = "% ERP",
+       title = "Área do terreno") +
+  theme_pander(base_size = 18, base_family = "lato") +
+  theme(#text = element_text(family = "lato", size = 18),
+    plot.title = element_text(hjust = 0.5, face = "italic", size = 24),
+    axis.text.y = element_text(hjust = 1, color = "black", size = 12),
+    axis.ticks.y = element_blank(),
+    plot.caption = element_markdown(size = 14),
+    legend.title = element_text(size = 14),
+    legend.box.just = "center",
+    legend.title.align = 0.5,
+    legend.background = element_blank(),
+    legend.position = c(0.75, 0.25))
+
+### Área construída 
+# Setores da MEM por número de unidades e percentual de unidades ERP - Pós PDE
+plot_mem_setores_area_construcao_vs_percentual_erp <-
+  alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(legislacao == "PDE2014eLPUOS2016") %>%
+  filter(!is.na(mem_setor)) %>%
+  pivot_wider(names_from = categoria_de_uso_grupo, values_from = n_unidades) %>%
+  left_join(alvaras_por_lote %>%
+              st_drop_geometry() %>%
+              # filter(ano_execucao >= 2014) %>%
+              filter(legislacao == "PDE2014eLPUOS2016") %>%
+              filter(!is.na(mem_setor)) %>%
+              group_by(mem_setor) %>%
+              summarize(setor_n_unidades = sum(n_unidades, na.rm = TRUE))) %>%
+  group_by(mem_setor) %>%
+  summarize(
+    setor_area_da_construcao = sum(area_da_construcao, na.rm = TRUE),
+    setor_percent_erp = sum(ERP, na.rm = TRUE)/first(setor_n_unidades)) %>%
+  ungroup() %>%
+  ggplot(aes(fct_reorder(str_wrap(mem_setor, width = 30), setor_area_da_construcao),
+             setor_area_da_construcao)) +
+  geom_col(aes(fill = setor_percent_erp, group = mem_setor), color = "black") +
+  geom_text(aes(label = paste0(setor_area_da_construcao, " m²")),
+            size = 4, vjust = 0, hjust = -0.1) +
+  geom_text(aes(label = paste0(label_percent()(setor_percent_erp), " ERP's")),
+            size = 4, vjust = 2, hjust = -0.1) +
+  scale_y_continuous(#breaks = seq(0, 100000, 10000), 
+    limits = c(0, 1800000),
+    expand = c(0,0),
+    labels = function(x) paste0(x, " m²")) +
+  scale_fill_gradient(low = "#009491", high = "#c4161c",
+                      labels = label_percent()
+  ) +
+  coord_flip() +
+  labs(x = "",
+       y = "",
+       fill = "% ERP",
+       title = "Área construída ") +
+  theme_pander(base_size = 18, base_family = "lato") +
+  theme(#text = element_text(family = "lato", size = 18),
+    plot.title = element_text(hjust = 0.5, face = "italic", size = 24),
+    axis.text.y = element_text(hjust = 1, color = "black", size = 12),
+    axis.ticks.y = element_blank(),
+    plot.caption = element_markdown(size = 14),
+    legend.title = element_text(size = 14),
+    legend.box.just = "center",
+    legend.title.align = 0.5,
+    legend.background = element_blank(),
+    legend.position = c(0.75, 0.25))
+
+(plot_mem_setores_area_terreno_vs_percentual_erp | plot_mem_setores_area_construcao_vs_percentual_erp) +
+  plot_annotation(
+    # title = "Evolução do número médio de unidades dos empreendimentos licenciados por tipo do empreendimento",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo",
+    theme = list(plot.caption = element_markdown(size = 24, hjust = 0.5))
+  )
+
+
+```
+
+
+### Setores da MEM por número de unidades e percentual de unidades ERP - regramento atual
+```{r}
+# Setores da MEM por número de unidades e percentual de unidades ERP - 2019-2021
+alvaras_por_unidade %>%
+  st_drop_geometry() %>%
+  filter(legislacao == "PDE2014eLPUOS2016") %>%
+  filter(!is.na(mem_setor)) %>%
+  group_by(mem_setor) %>% 
+  summarize(n_empreendimentos = n_distinct(id),
+            n_unidades = n(),
+            n_unidades_erm = length(n_unidades[which(categoria_de_uso_grupo == "ERM")]),
+            n_unidades_erp = length(n_unidades[which(categoria_de_uso_grupo == "ERP")]),
+            percent_erp = (n_unidades_erp / n_unidades),
+            n_unidades_por_km2 = n_unidades/(first(area_edificavel)/1000000),
+            distancia_cbd = mean(distancia_cbd)) %>%
+  ggplot(aes(fct_reorder(str_wrap(mem_setor, width = 30), n_unidades),
+             n_unidades)) +
+  geom_col(aes(fill = percent_erp), color = "black") +
+  # geom_hline(yintercept = mean(n_unidades, na.rm = TRUE), 
+  #            linetype = 2, color = "black", alpha = 0.6) +
+  geom_text(aes(label = paste0(n_unidades, " UH's | ", round(n_unidades_por_km2, 1), " UH's/km²")),
+            size = 5, vjust = 0, hjust = -0.1) +
+  geom_text(aes(label = paste0(label_percent()(percent_erp), " ERP's")),
+            size = 5, vjust = 2, hjust = -0.1) +
+  scale_y_continuous(#breaks = seq(0, 100000, 10000), 
+    limits = c(0, 18000),
+    expand = c(0,0), labels = function(x) paste0(x, " UH's")) +
+  # scale_fill_manual(values = c("#faa61a", "#a62b4d", "#f15a22")) +  
+  # scale_fill_distiller(palette = "YlOrBr") +
+  scale_fill_gradient(low = "#009491", high = "#c4161c",
+                      #labels = function(x) paste0(x, " km")
+                      labels = label_percent()
+  ) +
+  coord_flip() +
+  labs(x = "",
+       y = "",
+       fill = "% ERP",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo") +
+  theme(text = element_text(family = "lato", size = 18),
+        axis.text.y = element_text(hjust = 1, color = "black"),
+        axis.ticks.y = element_blank(),
+        plot.caption = element_markdown(size = 14, hjust = 0.5),
+        legend.title = element_text(size = 14),
+        legend.box.just = "center",
+        legend.title.align = 0.5,
+        legend.background = element_blank(),
+        legend.position = c(0.75, 0.25))
+
+```
+
+
+
+### Setores da MEM por cota-parte e categoria de uso - regramento atual
+```{r}
+### Cota-parte
+alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(legislacao == "PDE2014eLPUOS2016") %>%
+  filter(!is.na(mem_setor)) %>%
+  pivot_wider(names_from = categoria_de_uso_grupo, values_from = n_unidades) %>%
+  full_join(alvaras_por_lote %>%
+              st_drop_geometry() %>%
+              filter(legislacao == "PDE2014eLPUOS2016") %>%
+              filter(!is.na(mem_setor)) %>%
+              group_by(mem_setor) %>%
+              summarize(setor_n_unidades = sum(n_unidades, na.rm = TRUE),
+                        setor_cota_parte = mean(cota_parte, na.rm = TRUE))) %>%
+  group_by(mem_setor) %>%
+  summarize(setor_n_unidades = first(setor_n_unidades),
+            setor_cota_parte = first(setor_cota_parte),
+            setor_percent_erp = sum(ERP, na.rm = TRUE)/first(setor_n_unidades)) %>%
+  ungroup() %>%
+  ggplot(aes(fct_reorder(str_wrap(mem_setor, width = 30), desc(setor_cota_parte)),
+             setor_cota_parte)) +
+  # geom_boxplot(aes(fill = setor_percent_erp), color = "black") +
+  geom_point(aes(size = setor_n_unidades, color = setor_percent_erp)) +
+  geom_text(aes(label = paste0(round(setor_cota_parte, 1), " m²/UH")),
+            size = 5, vjust = 0, hjust = -0.1) +
+  geom_text(aes(label = paste0(setor_n_unidades, " UH's | ",
+                               label_percent()(round(setor_percent_erp, 1)), " ERP's")),
+            size = 5, vjust = 2, hjust = -0.1) +
+  scale_y_continuous(#breaks = c(seq(0, 100, 50), seq(100, 400, 100)),
+    limits = c(0, 90),
+    expand = c(0,0), labels = function(x) paste0(x, " m²/UH")) +
+  scale_color_gradient(low = "#009491", high = "#c4161c",
+                       #labels = function(x) paste0(x, " km")
+                       labels = label_percent()
+  ) +
+  scale_size_continuous(range = c(4, 10)) +
+  coord_flip() +
+  labs(x = "",
+       y = "",
+       color = "% ERP",
+       size = "UH's",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo") +
+  theme(text = element_text(family = "lato", size = 18),
+        axis.text.y = element_text(hjust = 1, color = "black"),
+        axis.ticks.y = element_blank(),
+        plot.caption = element_markdown(size = 14, hjust = 0.5),
+        legend.box = "horizontal",
+        legend.title = element_text(size = 14),
+        legend.box.just = "center",
+        legend.title.align = 0.5,
+        legend.background = element_blank(),
+        legend.position = c(0.85, 0.65))
+
+
+```
+
+
+### Total de área de construção vs total de unidades habitacionais por setores da MEM - regramento atual 
+```{r}
+# Dispersão - Setores da MEM: área construída vs unidades habitacionais`
+alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(legislacao == "PDE2014eLPUOS2016") %>%
+  filter(!is.na(mem_setor)) %>%
+  group_by(mem_setor) %>% 
+  summarize(n_unidades = sum(n_unidades, na.rm = TRUE),
+            area_do_terreno = sum(area_do_terreno, na.rm = TRUE),
+            area_da_construcao = sum(area_da_construcao, na.rm = TRUE),
+            distancia_cbd = mean(distancia_cbd)) %>%
+  mutate(outlier = if_else(mem_setor %in% c("FARIA LIMA-AGUA ESPRAIADA-CHUCRI ZAIDAN"), 
+                           TRUE, FALSE)) %>%
+  ggplot() +
+  geom_point(aes(area_da_construcao, n_unidades, size = area_da_construcao, color = mem_setor,
+                 label = mem_setor)) +
+  ggrepel::geom_label_repel(aes(area_da_construcao, n_unidades, color = mem_setor,
+                                label = str_wrap(mem_setor, width = 30)), size = 5) +
+  geom_smooth(data = . %>% filter(outlier == FALSE),
+              aes(area_da_construcao, n_unidades, group = outlier), method = "lm", se = FALSE) +
+  scale_x_continuous(breaks = seq(0, 1400000, 400000),
+                     labels = function(x) paste0(x, " m²")) +
+  scale_y_continuous(breaks = seq(0, 60000, 5000),
+                     labels = function(x) paste0(x, " UH's")) +
+  scale_color_viridis_d() +
+  labs(x = "",
+       y = "",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(#text = element_text(family = "lato", size = 24),
+    plot.caption = element_markdown(size = 16, hjust = 0),
+    axis.text.y = element_text(hjust = 1, color = "black"),
+    axis.ticks.y = element_blank(),
+    legend.position = "none")
+
+```
+
+
+### Setores da MEM por número de unidades e número de pavimentos - regramento atual
+```{r}
+# Setores da MEM por número de unidades e percentual de unidades ERP - 2
+alvaras_por_lote %>%
+  st_drop_geometry() %>%
+  filter(legislacao == "PDE2014eLPUOS2016") %>%
+  filter(!is.na(mem_setor)) %>%
+  group_by(mem_setor) %>% 
+  summarize(n_unidades = sum(n_unidades, na.rm = TRUE),
+            n_pavimentos_por_bloco = mean(n_pavimentos_por_bloco, na.rm = TRUE)) %>%
+  ggplot(aes(fct_reorder(str_wrap(mem_setor, width = 30), n_unidades),
+             n_unidades)) +
+  geom_col(aes(fill = n_pavimentos_por_bloco), color = "black") +
+  # geom_hline(yintercept = mean(n_unidades, na.rm = TRUE), 
+  #            linetype = 2, color = "black", alpha = 0.6) +
+  geom_text(aes(label = paste0(n_unidades, " UH's")),
+            size = 4, vjust = 0, hjust = -0.1) +
+  geom_text(aes(label = paste0(round(n_pavimentos_por_bloco, 1), " pavimentos")),
+            size = 4, vjust = 2, hjust = -0.1) +
+  scale_y_continuous(#breaks = seq(0, 100000, 10000), 
+    limits = c(0, 14500),
+    expand = c(0,0), labels = function(x) paste0(x, " UH's")) +
+  # scale_fill_manual(values = c("#faa61a", "#a62b4d", "#f15a22")) +  
+  # scale_fill_distiller(palette = "YlOrBr") +
+  scale_fill_gradient(low = "white", high = "gray25") +
+  coord_flip() +
+  labs(x = "",
+       y = "",
+       fill = "Média de pavimentos",
+       caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo") +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(text = element_text(family = "lato", size = 18),
+        axis.text.y = element_text(hjust = 1, color = "black"),
+        axis.ticks.y = element_blank(),
+        plot.caption = element_markdown(size = 14, hjust = 0),
+        legend.title = element_text(size = 14),
+        legend.box.just = "center",
+        legend.title.align = 0.5,
+        legend.background = element_blank(),
+        legend.position = c(0.8, 0.4))
+
+
+```
+
+
+## Acessibilidade
+
+
+### Acessibilidade de empregos na MEM e por setores da MEM - 2019
+```{r}
+#
+plot_mapa_mem_acessibilidade_por_setor <-
+  ggplot()  +
+  geom_sf(data = acessibilidade_empregos_por_grade %>%
+            st_intersection(subprefeituras) %>%
+            st_filter(mem),
+          aes(fill = fx_acessibilidade_empregos
+          )
+  ) +
+  geom_sf(data = bordas_cidade, alpha = 0.1) +
+  geom_sf(data = mem_por_setor, alpha = 0.8, fill = NA) +
+  # geom_sf(data = corredor_onibus, linetype = 2, alpha = 0.8) +
+  # geom_sf(data = linha_metro, linetype = 2, alpha = 0.8) +
+  # geom_sf(data = linha_trem, linetype = 2, alpha = 0.8) +
+  geom_label_repel(data = mem_por_setor %>%
+                     group_by(mem_setor) %>%
+                     summarize(
+                       X = mean(X),
+                       Y = mean(Y)),
+                   aes(x = X, y = Y, label = mem_setor),
+                   size = 3, alpha = 0.8,
+                   fontface = "bold") +
+  scale_fill_viridis_d(option = "viridis", direction = -1) +
+  labs(color = "Acessibilidade",
+       x = "", y = "",
+       
+  ) +
+  theme_pander(base_size = 24, base_family = "lato") +
+  theme(plot.subtitle = element_text(hjust = 0.5),
+        plot.caption = element_markdown(size = 16),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        plot.title = element_text(face = "italic", hjust = .5),
+        legend.position = c(0.75, 0.15),
+        legend.title = element_text(face = "plain",  size = 16),
+        legend.box = "horizontal") +
+  coord_sf(xlim = st_bbox(bbox_sp)[c(1, 3)],
+           ylim = st_bbox(bbox_sp)[c(2, 4)])
+
+#
+plot_mem_acessibilidade_por_setor <- 
+  acessibilidade_empregos_por_grade %>%
+  st_transform(crs = st_crs(mem_por_setor)) %>%
+  st_join(mem_por_setor, largest = TRUE) %>%
+  st_drop_geometry() %>%
+  filter(!is.na(mem_setor)) %>%
+  group_by(mem_setor) %>%
+  summarize(
+    acessibilidade_empregos = mean(acessibilidade_empregos, na.rm = TRUE),
+    fx_accssbl = case_when(
+      acessibilidade_empregos <= quantile(acessibilidade_empregos_por_grade$acessibilidade_empregos, 0.3) ~ "Muito baixa",
+      between(acessibilidade_empregos, quantile(acessibilidade_empregos_por_grade$acessibilidade_empregos, 0.301),
+              quantile(acessibilidade_empregos_por_grade$acessibilidade_empregos, 0.5)) ~ "Baixa",
+      between(acessibilidade_empregos, quantile(acessibilidade_empregos_por_grade$acessibilidade_empregos, 0.501),
+              quantile(acessibilidade_empregos_por_grade$acessibilidade_empregos, 0.7)) ~ "Média",
+      between(acessibilidade_empregos, quantile(acessibilidade_empregos_por_grade$acessibilidade_empregos, 0.701),
+              quantile(acessibilidade_empregos_por_grade$acessibilidade_empregos, 0.9)) ~ "Alta",
+      acessibilidade_empregos > quantile(acessibilidade_empregos_por_grade$acessibilidade_empregos, 0.9) ~ "Muito alta"
+    ) %>%
+      factor(levels = c("Muito baixa", "Baixa", "Média", "Alta", "Muito alta"))
+  ) %>%
+  ggplot(aes(fct_reorder(str_wrap(mem_setor, width = 15), acessibilidade_empregos), acessibilidade_empregos)) +
+  geom_col(aes(fill = fx_accssbl, group = mem_setor), color = "black") +
+  geom_text(aes(label = round(acessibilidade_empregos)),
+            size = 4, vjust = 0.5, hjust = -0.05) +
+  scale_y_continuous(#breaks = seq(0, 100000, 10000),
+    limits = c(0, 270000),
+    expand = c(0,0)) +
+  # scale_fill_gradient(low = "#009491", high = "#c4161c",
+  #                     labels = label_percent()
+  # ) +
+  scale_fill_manual(values = c("Muito alta" = "#440154FF",
+                               "Alta" = "#3B528BFF",
+                               "Média" = "#21908CFF")) +
+  coord_flip() +
+  labs(x = "",
+       y = "",
+       fill = "Acessibilidade",
+       title = "") +
+  theme_pander(base_size = 18, base_family = "lato") +
+  theme(#text = element_text(family = "lato", size = 18),
+    plot.title = element_text(hjust = 0.5, face = "italic", size = 24),
+    axis.text.y = element_text(hjust = 1, color = "black", size = 12),
+    axis.ticks.y = element_blank(),
+    plot.caption = element_markdown(size = 14),
+    legend.title = element_text(size = 14, face = "plain"),
+    legend.box.just = "center",
+    legend.title.align = 0.5,
+    legend.background = element_blank(),
+    legend.position = c(0.75, 0.25))
+
+
+#
+plot_mapa_mem_acessibilidade_por_setor + plot_mem_acessibilidade_por_setor +
+  plot_annotation(
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: ABRAINC/Prefeitura de São Paulo", 
+    theme = list(plot.title = element_text(size = 20, face = "bold"),
+                 plot.caption = element_markdown(size = 16))
+  )
+
+
+```
+
+### Distribuição dos empreendimentos na MEM em função de sua acessibilidade (regramento aplicado)
+```{r}
+# Gerar gráfico como o abaixo mostrando a localização dos ERM e ERP em função da distância ao centro para pré-PDE e pós-PDE 
+#
+plot_densidade_acessibilidade_t0 <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  filter(macroarea == "MEM") %>%
+  filter(legislacao %in% c("PDE2002eLPUOS2004")) %>%
+  ggplot(aes(log(acessibilidade_empregos), ..density.., group = categoria_de_uso_grupo, fill = categoria_de_uso_grupo)) +
+  geom_density(alpha = .9) +
+  scale_x_continuous(breaks = seq(9, 12, 1),
+                     limits = c(8, 12.62),
+                     labels = c("- acessibilidade", "", "",
+                                "+ acessibilidade")) +
+  coord_trans(x = "reverse") +
+  scale_y_continuous(limits = c(0, 0.65),
+                     breaks = breaks_pretty(n = 4)) +
+  theme_pander(base_size = 30, base_family = "lato") +
+  labs(title = "",
+       subtitle = "PDE2002 e LPUOS2004",
+       x = "",
+       y = "") +
+  theme(plot.subtitle = element_text(size = 24, hjust = 0.5),
+        axis.ticks = element_line(colour = "black"),
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size = 18),
+        legend.title = element_blank(),
+        legend.position = "none") 
+
+#
+plot_densidade_acessibilidade_t1 <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  filter(macroarea == "MEM") %>%
+  filter(legislacao %in% c("PDE2014eLPUOS2016")) %>%
+  ggplot(aes(log(acessibilidade_empregos), ..density.., group = categoria_de_uso_grupo, fill = categoria_de_uso_grupo)) +
+  geom_density(alpha = .9) +
+  scale_x_continuous(breaks = seq(9, 12, 1),
+                     limits = c(8, 12.62),
+                     labels = c("- acessibilidade", "", "",
+                                "+ acessibilidade")) +
+  scale_y_continuous(limits = c(0,0.65),
+                     breaks = pretty_breaks(n = 4)) +
+  coord_trans(x = "reverse") +
+  theme_pander(base_size = 30, base_family = "lato") +
+  labs(title = "",
+       subtitle = "PDE2014 e LPUOS2016",
+       x = "",
+       y = "") +
+  theme(plot.subtitle = element_text(size = 24, hjust = 0.5),
+        axis.ticks = element_line(colour = "black"),
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size = 18),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 18),
+        legend.position = c(0.8, 0.6)) 
+
+##
+plot_histograma_acessibilidade_t0 <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  filter(macroarea == "MEM") %>%
+  filter(legislacao %in% c("PDE2002eLPUOS2004")) %>%
+  ggplot(aes(log(acessibilidade_empregos), ..count.., 
+             fill = categoria_de_uso_grupo, shape = categoria_de_uso_grupo)) +
+  geom_histogram(position = "stack", color = "black", alpha = .9#, 
+                 #breaks = seq(0, 30, 1)
+  ) +
+  scale_y_continuous(breaks = seq(0, 80, 20),
+                     limits = c(0, 65)) +
+  scale_x_continuous(breaks = seq(9, 12, 1),
+                     limits = c(8, 12.62),
+                     labels = c("- acessibilidade", "", "",
+                                "+ acessibilidade"),
+  ) +
+  coord_trans(x = "reverse") +
+  theme_pander(base_size = 30, base_family = "lato") +
+  labs(title = "",
+       x = "",
+       y = "") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        axis.ticks = element_line(colour = "black"),
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size = 18),
+        legend.title = element_blank(),
+        legend.position = "none") 
+
+##
+plot_histograma_acessibilidade_t1 <-
+  st_drop_geometry(alvaras_por_lote) %>%
+  filter(macroarea == "MEM") %>%
+  filter(legislacao %in% c("PDE2014eLPUOS2016")) %>%
+  ggplot(aes(log(acessibilidade_empregos), ..count.., 
+             fill = categoria_de_uso_grupo, shape = categoria_de_uso_grupo)) +
+  geom_histogram(position = "stack", color = "black", alpha = .9#, 
+                 #breaks = seq(0, 30, 1)
+  ) +
+  scale_y_continuous(breaks = seq(0, 80, 20),
+                     limits = c(0, 65)) +
+  scale_x_continuous(breaks = seq(9, 12, 1),
+                     limits = c(8, 12.62),
+                     labels = c("- acessibilidade", "", "",
+                                "+ acessibilidade"),
+  ) +
+  coord_trans(x = "reverse") +
+  theme_pander(base_size = 30, base_family = "lato") +
+  labs(title = "",
+       # caption = "*Obs: Centro = Praça da Sé* <br>",
+       x = "",
+       y = "") +
+  theme(plot.title = element_text(hjust = 0, face = "bold"),
+        axis.ticks = element_line(colour = "black"),
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(size = 18),
+        legend.title = element_blank(),
+        legend.position = "none",
+        plot.caption = element_markdown(size = 18)) 
+
+#
+(plot_densidade_acessibilidade_t0 | plot_densidade_acessibilidade_t1) /
+  (plot_histograma_acessibilidade_t0 | plot_histograma_acessibilidade_t1) +
+  plot_annotation(
+    # title = "Densidade e total de licenciamentos por distância do centro",
+    caption = "**Elaboração**: Laboratório Arq.Futuro - Insper | **Dados**: Prefeitura de São Paulo",
+    theme = list(plot.title = element_text(size = 20, face = "italic"),
+                 plot.caption = element_markdown(size = 18))
+  )
+
+```
